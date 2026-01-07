@@ -4,17 +4,20 @@ A sophisticated, mobile-first Streamlit application for science-based leg develo
 
 Author: AI Strength & Conditioning Coach
 Target User: 22-year-old student, 61.1kg, experienced lifter with lagging legs
+Version: 2.0 - Enhanced with CSV export, rest timer, 1RM calculator, measurements, streaks
 """
 
 import streamlit as st
 import pandas as pd
 import json
 import os
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from io import StringIO
 
 # ============================================================================
 # CONFIGURATION & CONSTANTS
@@ -25,249 +28,88 @@ DATA_FILE = "workout_logs.json"
 SETTINGS_FILE = "user_settings.json"
 APP_PASSWORD = "01012026"
 
-# User Profile
 USER_PROFILE = {
     "weight_kg": 61.1,
     "age": 22,
     "protein_g": 125,
     "carbs_g": 415,
     "fats_g": 60,
-    "supplements": {
-        "creatine_g": 5,
-        "maltodextrin_g": 40,
-        "whey_g": 30
-    }
+    "supplements": {"creatine_g": 5, "maltodextrin_g": 40, "whey_g": 30}
 }
 
-# Base schedule mapping (0 = Monday)
 BASE_SCHEDULE = {
-    0: "Legs A",  # Monday - Squat Focus
-    1: "Rest",    # Tuesday
-    2: "Legs B",  # Wednesday - Hinge Focus
-    3: "Rest",    # Thursday
-    4: "Legs C",  # Friday - Hypertrophy
-    5: "Rest",    # Saturday
-    6: "Rest"     # Sunday
+    0: "Legs A", 1: "Rest", 2: "Legs B", 3: "Rest",
+    4: "Legs C", 5: "Rest", 6: "Rest"
 }
 
-# Weight increments for progression
-WEIGHT_INCREMENT = {
-    "compound": 2.5,
-    "isolation": 1.25
-}
+WEIGHT_INCREMENT = {"compound": 2.5, "isolation": 1.25}
 
-# Compound exercises list
 COMPOUND_EXERCISES = [
     "High Bar Squat", "Romanian Deadlift", "Leg Press",
     "Unilateral Leg Press", "Hack Squat", "Hip Thrust"
 ]
 
-# Exercise database
 EXERCISES = {
     "Legs A": [
-        {
-            "name": "High Bar Squat",
-            "sets": 3,
-            "rep_range": (5, 8),
-            "rest": "3 min",
-            "video": "https://www.youtube.com/watch?v=eMYjBnIVb_A",
-            "notes": "Primary quad builder. Brace hard, hit depth."
-        },
-        {
-            "name": "Leg Extension",
-            "sets": 3,
-            "rep_range": (10, 12),
-            "rest": "90s",
-            "video": "https://www.youtube.com/watch?v=WaRl1k71iT0",
-            "notes": "Squeeze at top, control the negative."
-        },
-        {
-            "name": "Leg Press",
-            "sets": 3,
-            "rep_range": (10, 12),
-            "rest": "2 min",
-            "video": "https://www.youtube.com/watch?v=8nm863C0c60",
-            "notes": "Feet shoulder-width, full ROM."
-        },
-        {
-            "name": "Seated Leg Curl",
-            "sets": 3,
-            "rep_range": (12, 15),
-            "rest": "90s",
-            "video": "https://www.youtube.com/watch?v=OrxowZ4l3yI",
-            "notes": "Point toes, squeeze hamstrings."
-        },
-        {
-            "name": "Standing Calf Raise",
-            "sets": 4,
-            "rep_range": (8, 10),
-            "rest": "60s",
-            "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc",
-            "notes": "Full stretch at bottom, pause at top."
-        }
+        {"name": "High Bar Squat", "sets": 3, "rep_range": (5, 8), "rest": "3 min", "rest_seconds": 180,
+         "video": "https://www.youtube.com/watch?v=eMYjBnIVb_A", "notes": "Primary quad builder. Brace hard, hit depth."},
+        {"name": "Leg Extension", "sets": 3, "rep_range": (10, 12), "rest": "90s", "rest_seconds": 90,
+         "video": "https://www.youtube.com/watch?v=WaRl1k71iT0", "notes": "Squeeze at top, control the negative."},
+        {"name": "Leg Press", "sets": 3, "rep_range": (10, 12), "rest": "2 min", "rest_seconds": 120,
+         "video": "https://www.youtube.com/watch?v=8nm863C0c60", "notes": "Feet shoulder-width, full ROM."},
+        {"name": "Seated Leg Curl", "sets": 3, "rep_range": (12, 15), "rest": "90s", "rest_seconds": 90,
+         "video": "https://www.youtube.com/watch?v=OrxowZ4l3yI", "notes": "Point toes, squeeze hamstrings."},
+        {"name": "Standing Calf Raise", "sets": 4, "rep_range": (8, 10), "rest": "60s", "rest_seconds": 60,
+         "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc", "notes": "Full stretch at bottom, pause at top."}
     ],
     "Legs B": [
-        {
-            "name": "Romanian Deadlift",
-            "sets": 3,
-            "rep_range": (8, 10),
-            "rest": "3 min",
-            "video": "https://www.youtube.com/watch?v=JCXUYuzwNrM",
-            "notes": "Hinge pattern. Feel the hamstring stretch."
-        },
-        {
-            "name": "Unilateral Leg Press",
-            "sets": 3,
-            "rep_range": (10, 12),
-            "rest": "2 min",
-            "video": "https://www.youtube.com/watch?v=8nm863C0c60",
-            "notes": "One leg at a time. Balance strength."
-        },
-        {
-            "name": "Lying Leg Curl",
-            "sets": 3,
-            "rep_range": (12, 15),
-            "rest": "60s",
-            "video": "https://www.youtube.com/watch?v=1Tq3QdYUuHs",
-            "notes": "Squeeze hard at peak contraction."
-        },
-        {
-            "name": "Adductor Machine",
-            "sets": 3,
-            "rep_range": (15, 20),
-            "rest": "60s",
-            "video": "https://www.youtube.com/watch?v=KaEp53Hj-EU",
-            "notes": "Inner thigh focus. Control both phases."
-        },
-        {
-            "name": "Seated Calf Raise",
-            "sets": 4,
-            "rep_range": (15, 20),
-            "rest": "60s",
-            "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc",
-            "notes": "Soleus focus. Deep stretch, hard squeeze."
-        }
+        {"name": "Romanian Deadlift", "sets": 3, "rep_range": (8, 10), "rest": "3 min", "rest_seconds": 180,
+         "video": "https://www.youtube.com/watch?v=JCXUYuzwNrM", "notes": "Hinge pattern. Feel the hamstring stretch."},
+        {"name": "Unilateral Leg Press", "sets": 3, "rep_range": (10, 12), "rest": "2 min", "rest_seconds": 120,
+         "video": "https://www.youtube.com/watch?v=8nm863C0c60", "notes": "One leg at a time. Balance strength."},
+        {"name": "Lying Leg Curl", "sets": 3, "rep_range": (12, 15), "rest": "60s", "rest_seconds": 60,
+         "video": "https://www.youtube.com/watch?v=1Tq3QdYUuHs", "notes": "Squeeze hard at peak contraction."},
+        {"name": "Adductor Machine", "sets": 3, "rep_range": (15, 20), "rest": "60s", "rest_seconds": 60,
+         "video": "https://www.youtube.com/watch?v=KaEp53Hj-EU", "notes": "Inner thigh focus. Control both phases."},
+        {"name": "Seated Calf Raise", "sets": 4, "rep_range": (15, 20), "rest": "60s", "rest_seconds": 60,
+         "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc", "notes": "Soleus focus. Deep stretch, hard squeeze."}
     ],
     "Legs C": [
-        {
-            "name": "Hack Squat",
-            "sets": 3,
-            "rep_range": (10, 12),
-            "rest": "3 min",
-            "video": "https://www.youtube.com/watch?v=0tmSzVHnh_s",
-            "notes": "Quad dominant. Controlled descent."
-        },
-        {
-            "name": "Hip Thrust",
-            "sets": 3,
-            "rep_range": (10, 12),
-            "rest": "2 min",
-            "video": "https://www.youtube.com/watch?v=xDmFkJxPzeM",
-            "notes": "Glute focus. Full hip extension."
-        },
-        {
-            "name": "Leg Extension (Drop Set)",
-            "sets": 3,
-            "rep_range": (15, 20),
-            "rest": "90s",
-            "video": "https://www.youtube.com/watch?v=WaRl1k71iT0",
-            "notes": "Drop weight 20% after failure, continue."
-        },
-        {
-            "name": "Seated Leg Curl",
-            "sets": 3,
-            "rep_range": (15, 20),
-            "rest": "60s",
-            "video": "https://www.youtube.com/watch?v=OrxowZ4l3yI",
-            "notes": "High reps, chase the pump."
-        },
-        {
-            "name": "Calf Press",
-            "sets": 3,
-            "rep_range": (20, 25),
-            "rest": "45s",
-            "video": "https://www.youtube.com/watch?v=K_jsGgztcGU",
-            "notes": "Leg press machine. Burn it out."
-        }
+        {"name": "Hack Squat", "sets": 3, "rep_range": (10, 12), "rest": "3 min", "rest_seconds": 180,
+         "video": "https://www.youtube.com/watch?v=0tmSzVHnh_s", "notes": "Quad dominant. Controlled descent."},
+        {"name": "Hip Thrust", "sets": 3, "rep_range": (10, 12), "rest": "2 min", "rest_seconds": 120,
+         "video": "https://www.youtube.com/watch?v=xDmFkJxPzeM", "notes": "Glute focus. Full hip extension."},
+        {"name": "Leg Extension (Drop Set)", "sets": 3, "rep_range": (15, 20), "rest": "90s", "rest_seconds": 90,
+         "video": "https://www.youtube.com/watch?v=WaRl1k71iT0", "notes": "Drop weight 20% after failure, continue."},
+        {"name": "Seated Leg Curl", "sets": 3, "rep_range": (15, 20), "rest": "60s", "rest_seconds": 60,
+         "video": "https://www.youtube.com/watch?v=OrxowZ4l3yI", "notes": "High reps, chase the pump."},
+        {"name": "Calf Press", "sets": 3, "rep_range": (20, 25), "rest": "45s", "rest_seconds": 45,
+         "video": "https://www.youtube.com/watch?v=K_jsGgztcGU", "notes": "Leg press machine. Burn it out."}
     ]
 }
 
-# Meal Plans
 MEAL_PLANS = {
     "Option 1 - Clean/Rice": {
-        "breakfast": {
-            "name": "Power Oats",
-            "items": ["100g Oats", "1 Scoop Whey", "1 Banana", "Drizzle of Honey"],
-            "timing": "08:00"
-        },
-        "lunch": {
-            "name": "Chicken & Rice",
-            "items": ["150g Chicken Breast", "300g Basmati Rice", "Mixed Veggies", "1 tbsp Olive Oil"],
-            "timing": "12:30",
-            "note": "Walk 15 min after eating"
-        },
-        "pre_workout": {
-            "name": "Quick Carbs",
-            "items": ["2 Slices Toast", "30g Jam"],
-            "timing": "60 min before gym"
-        },
-        "post_workout": {
-            "name": "Recovery Shake",
-            "items": ["30g Whey", "40g Maltodextrin", "5g Creatine"],
-            "timing": "Within 30 min of training"
-        },
-        "dinner": {
-            "name": "Eggs & Potatoes",
-            "items": ["3 Whole Eggs", "2 Large Potatoes", "1 Apple"],
-            "timing": "20:00"
-        }
+        "breakfast": {"name": "Power Oats", "items": ["100g Oats", "1 Scoop Whey", "1 Banana", "Drizzle of Honey"], "timing": "08:00"},
+        "lunch": {"name": "Chicken & Rice", "items": ["150g Chicken Breast", "300g Basmati Rice", "Mixed Veggies", "1 tbsp Olive Oil"], "timing": "12:30", "note": "Walk 15 min after eating"},
+        "pre_workout": {"name": "Quick Carbs", "items": ["2 Slices Toast", "30g Jam"], "timing": "60 min before gym"},
+        "post_workout": {"name": "Recovery Shake", "items": ["30g Whey", "40g Maltodextrin", "5g Creatine"], "timing": "Within 30 min of training"},
+        "dinner": {"name": "Eggs & Potatoes", "items": ["3 Whole Eggs", "2 Large Potatoes", "1 Apple"], "timing": "20:00"}
     },
     "Option 2 - Dense/Pasta": {
-        "breakfast": {
-            "name": "Protein Pancakes",
-            "items": ["100g Oat Flour", "1 Banana", "Egg Whites", "Sugar-free Syrup"],
-            "timing": "08:00"
-        },
-        "lunch": {
-            "name": "Beef Pasta",
-            "items": ["120g Lean Ground Beef", "150g Dry Pasta", "Marinara Sauce"],
-            "timing": "12:30",
-            "note": "Walk 15 min after eating"
-        },
-        "pre_workout": {
-            "name": "Cereal Boost",
-            "items": ["40g Cereal", "200ml Milk"],
-            "timing": "60 min before gym"
-        },
-        "post_workout": {
-            "name": "Recovery Shake",
-            "items": ["30g Whey", "40g Maltodextrin", "5g Creatine"],
-            "timing": "Within 30 min of training"
-        },
-        "dinner": {
-            "name": "Fish & Rice",
-            "items": ["150g White Fish", "300g Rice", "1/2 Avocado", "Glass of Juice"],
-            "timing": "20:00"
-        }
+        "breakfast": {"name": "Protein Pancakes", "items": ["100g Oat Flour", "1 Banana", "Egg Whites", "Sugar-free Syrup"], "timing": "08:00"},
+        "lunch": {"name": "Beef Pasta", "items": ["120g Lean Ground Beef", "150g Dry Pasta", "Marinara Sauce"], "timing": "12:30", "note": "Walk 15 min after eating"},
+        "pre_workout": {"name": "Cereal Boost", "items": ["40g Cereal", "200ml Milk"], "timing": "60 min before gym"},
+        "post_workout": {"name": "Recovery Shake", "items": ["30g Whey", "40g Maltodextrin", "5g Creatine"], "timing": "Within 30 min of training"},
+        "dinner": {"name": "Fish & Rice", "items": ["150g White Fish", "300g Rice", "1/2 Avocado", "Glass of Juice"], "timing": "20:00"}
     }
 }
 
-# Starting weights for new users
 STARTING_WEIGHTS = {
-    "High Bar Squat": 40,
-    "Leg Extension": 20,
-    "Leg Press": 60,
-    "Seated Leg Curl": 15,
-    "Standing Calf Raise": 30,
-    "Romanian Deadlift": 40,
-    "Unilateral Leg Press": 30,
-    "Lying Leg Curl": 15,
-    "Adductor Machine": 20,
-    "Seated Calf Raise": 25,
-    "Hack Squat": 40,
-    "Hip Thrust": 40,
-    "Leg Extension (Drop Set)": 15,
-    "Calf Press": 60
+    "High Bar Squat": 40, "Leg Extension": 20, "Leg Press": 60, "Seated Leg Curl": 15,
+    "Standing Calf Raise": 30, "Romanian Deadlift": 40, "Unilateral Leg Press": 30,
+    "Lying Leg Curl": 15, "Adductor Machine": 20, "Seated Calf Raise": 25,
+    "Hack Squat": 40, "Hip Thrust": 40, "Leg Extension (Drop Set)": 15, "Calf Press": 60
 }
 
 
@@ -276,36 +118,291 @@ STARTING_WEIGHTS = {
 # ============================================================================
 
 def load_logs() -> Dict:
-    """Load workout logs from JSON file."""
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'r') as f:
             return json.load(f)
-    return {"workouts": [], "exercises": {}, "skipped_sessions": [], "schedule_offset": 0}
+    return {"workouts": [], "exercises": {}, "skipped_sessions": [], "measurements": [], "schedule_offset": 0}
 
 
 def save_logs(data: Dict) -> None:
-    """Save workout logs to JSON file."""
     with open(DATA_FILE, 'w') as f:
         json.dump(data, f, indent=2, default=str)
 
 
 def load_settings() -> Dict:
-    """Load user settings from JSON file."""
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
             return json.load(f)
-    return {
-        "meal_plan": "Option 1 - Clean/Rice",
-        "holiday_mode": False,
-        "holiday_start": None,
-        "schedule_offset": 0
-    }
+    return {"meal_plan": "Option 1 - Clean/Rice", "holiday_mode": False, "holiday_start": None, "schedule_offset": 0}
 
 
 def save_settings(settings: Dict) -> None:
-    """Save user settings to JSON file."""
     with open(SETTINGS_FILE, 'w') as f:
         json.dump(settings, f, indent=2)
+
+
+# ============================================================================
+# CSV EXPORT/IMPORT
+# ============================================================================
+
+def export_logs_to_csv(logs: Dict) -> str:
+    """Export all workout logs to CSV format."""
+    rows = []
+    for exercise_name, history in logs.get("exercises", {}).items():
+        for entry in history:
+            date = entry.get("date", "")[:19]
+            weight = entry.get("weight", 0)
+            workout = entry.get("workout", "")
+            notes = entry.get("notes", "")
+            sets = entry.get("sets", [])
+            for i, s in enumerate(sets):
+                rows.append({
+                    "Date": date,
+                    "Exercise": exercise_name,
+                    "Workout": workout,
+                    "Set": i + 1,
+                    "Weight_kg": weight,
+                    "Reps": s.get("reps", 0),
+                    "RPE": s.get("rpe", 8),
+                    "Notes": notes
+                })
+
+    if not rows:
+        return "Date,Exercise,Workout,Set,Weight_kg,Reps,RPE,Notes\n"
+
+    df = pd.DataFrame(rows)
+    return df.to_csv(index=False)
+
+
+def export_measurements_to_csv(logs: Dict) -> str:
+    """Export body measurements to CSV."""
+    measurements = logs.get("measurements", [])
+    if not measurements:
+        return "Date,Body_Weight_kg,Left_Thigh_cm,Right_Thigh_cm,Left_Calf_cm,Right_Calf_cm,Notes\n"
+
+    df = pd.DataFrame(measurements)
+    return df.to_csv(index=False)
+
+
+def import_csv_to_logs(csv_content: str, logs: Dict) -> Tuple[Dict, int]:
+    """Import workout data from CSV. Returns updated logs and count of imported entries."""
+    try:
+        df = pd.read_csv(StringIO(csv_content))
+        required_cols = ["Date", "Exercise", "Weight_kg", "Reps"]
+        if not all(col in df.columns for col in required_cols):
+            return logs, -1
+
+        imported = 0
+        grouped = df.groupby(["Date", "Exercise"])
+
+        for (date, exercise), group in grouped:
+            sets_data = []
+            for _, row in group.iterrows():
+                sets_data.append({
+                    "reps": int(row.get("Reps", 0)),
+                    "rpe": float(row.get("RPE", 8))
+                })
+
+            entry = {
+                "date": str(date),
+                "workout": str(group.iloc[0].get("Workout", "")),
+                "weight": float(group.iloc[0]["Weight_kg"]),
+                "sets": sets_data,
+                "notes": str(group.iloc[0].get("Notes", ""))
+            }
+
+            if exercise not in logs["exercises"]:
+                logs["exercises"][exercise] = []
+
+            logs["exercises"][exercise].append(entry)
+            imported += 1
+
+        return logs, imported
+    except Exception as e:
+        return logs, -1
+
+
+# ============================================================================
+# 1RM CALCULATOR
+# ============================================================================
+
+def calculate_1rm(weight: float, reps: int, formula: str = "brzycki") -> float:
+    """
+    Calculate estimated 1 Rep Max using various formulas.
+
+    Formulas:
+    - Brzycki: weight × (36 / (37 - reps))
+    - Epley: weight × (1 + 0.0333 × reps)
+    - Lander: (100 × weight) / (101.3 - 2.67123 × reps)
+    """
+    if reps <= 0 or weight <= 0:
+        return 0
+    if reps == 1:
+        return weight
+    if reps > 12:
+        reps = 12  # Cap for accuracy
+
+    if formula == "brzycki":
+        return weight * (36 / (37 - reps))
+    elif formula == "epley":
+        return weight * (1 + 0.0333 * reps)
+    elif formula == "lander":
+        return (100 * weight) / (101.3 - 2.67123 * reps)
+    else:
+        # Average of all three
+        brzycki = weight * (36 / (37 - reps))
+        epley = weight * (1 + 0.0333 * reps)
+        lander = (100 * weight) / (101.3 - 2.67123 * reps)
+        return (brzycki + epley + lander) / 3
+
+
+def get_percentages_from_1rm(one_rm: float) -> Dict[str, float]:
+    """Get training weights at various percentages of 1RM."""
+    percentages = {
+        "100% (1RM)": 1.0,
+        "95% (2 reps)": 0.95,
+        "90% (3-4 reps)": 0.90,
+        "85% (5-6 reps)": 0.85,
+        "80% (7-8 reps)": 0.80,
+        "75% (9-10 reps)": 0.75,
+        "70% (11-12 reps)": 0.70,
+        "65% (15+ reps)": 0.65,
+    }
+    return {k: round(one_rm * v, 1) for k, v in percentages.items()}
+
+
+# ============================================================================
+# WARM-UP GENERATOR
+# ============================================================================
+
+def generate_warmup_sets(working_weight: float, working_reps: int) -> List[Dict]:
+    """Generate progressive warm-up sets for a given working weight."""
+    warmup = []
+
+    # Empty bar / very light (if applicable)
+    if working_weight >= 40:
+        warmup.append({"weight": 20, "reps": 10, "notes": "Empty bar / mobility"})
+
+    # 40% x 8
+    if working_weight >= 30:
+        warmup.append({"weight": round(working_weight * 0.4 / 2.5) * 2.5, "reps": 8, "notes": "40% - Easy"})
+
+    # 60% x 5
+    warmup.append({"weight": round(working_weight * 0.6 / 2.5) * 2.5, "reps": 5, "notes": "60% - Moderate"})
+
+    # 75% x 3
+    warmup.append({"weight": round(working_weight * 0.75 / 2.5) * 2.5, "reps": 3, "notes": "75% - Getting heavy"})
+
+    # 85% x 2
+    warmup.append({"weight": round(working_weight * 0.85 / 2.5) * 2.5, "reps": 2, "notes": "85% - Prime nervous system"})
+
+    # 90% x 1 (optional for heavy days)
+    if working_reps <= 6:
+        warmup.append({"weight": round(working_weight * 0.90 / 2.5) * 2.5, "reps": 1, "notes": "90% - Final prep"})
+
+    return warmup
+
+
+# ============================================================================
+# STREAK CALCULATOR
+# ============================================================================
+
+def calculate_streak(logs: Dict, settings: Dict) -> Dict:
+    """Calculate training streak and consistency metrics."""
+    workouts = logs.get("workouts", [])
+
+    if not workouts:
+        return {
+            "current_streak_weeks": 0,
+            "longest_streak_weeks": 0,
+            "total_weeks_trained": 0,
+            "consistency_percent": 0,
+            "workouts_this_week": 0,
+            "target_workouts_week": 3
+        }
+
+    # Get unique workout dates
+    workout_dates = set()
+    for w in workouts:
+        date_str = w.get("date", "")[:10]
+        if date_str:
+            workout_dates.add(date_str)
+
+    if not workout_dates:
+        return {"current_streak_weeks": 0, "longest_streak_weeks": 0, "total_weeks_trained": 0,
+                "consistency_percent": 0, "workouts_this_week": 0, "target_workouts_week": 3}
+
+    # Convert to datetime and sort
+    dates = sorted([datetime.fromisoformat(d) for d in workout_dates])
+
+    # Calculate weeks with at least one workout
+    weeks_trained = set()
+    for d in dates:
+        week_key = d.strftime("%Y-W%W")
+        weeks_trained.add(week_key)
+
+    # Current week workouts
+    current_week = datetime.now().strftime("%Y-W%W")
+    workouts_this_week = sum(1 for d in dates if d.strftime("%Y-W%W") == current_week)
+
+    # Calculate streak (consecutive weeks with workouts)
+    all_weeks = []
+    start_date = dates[0]
+    end_date = datetime.now()
+    current = start_date
+    while current <= end_date:
+        all_weeks.append(current.strftime("%Y-W%W"))
+        current += timedelta(weeks=1)
+
+    # Find current streak
+    current_streak = 0
+    for week in reversed(all_weeks):
+        if week in weeks_trained:
+            current_streak += 1
+        else:
+            break
+
+    # Find longest streak
+    longest_streak = 0
+    temp_streak = 0
+    for week in all_weeks:
+        if week in weeks_trained:
+            temp_streak += 1
+            longest_streak = max(longest_streak, temp_streak)
+        else:
+            temp_streak = 0
+
+    # Consistency
+    total_possible_weeks = len(all_weeks)
+    consistency = (len(weeks_trained) / total_possible_weeks * 100) if total_possible_weeks > 0 else 0
+
+    return {
+        "current_streak_weeks": current_streak,
+        "longest_streak_weeks": longest_streak,
+        "total_weeks_trained": len(weeks_trained),
+        "consistency_percent": round(consistency, 1),
+        "workouts_this_week": workouts_this_week,
+        "target_workouts_week": 3
+    }
+
+
+# ============================================================================
+# PR DETECTION
+# ============================================================================
+
+def check_for_new_pr(exercise_name: str, weight: float, logs: Dict) -> Tuple[bool, float]:
+    """Check if the logged weight is a new PR. Returns (is_pr, old_pr)."""
+    history = logs.get("exercises", {}).get(exercise_name, [])
+
+    if not history:
+        return True, 0  # First entry is always a PR
+
+    max_weight = max([h.get("weight", 0) for h in history])
+
+    if weight > max_weight:
+        return True, max_weight
+
+    return False, max_weight
 
 
 # ============================================================================
@@ -313,16 +410,13 @@ def save_settings(settings: Dict) -> None:
 # ============================================================================
 
 def check_password() -> bool:
-    """Returns True if user is authenticated."""
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
-
     if st.session_state.authenticated:
         return True
 
     st.markdown("## 🔐 NeuroLegs")
     st.markdown("Enter password to access your training log.")
-
     password = st.text_input("Password", type="password", key="password_input")
 
     if st.button("Login", type="primary", use_container_width=True):
@@ -341,12 +435,9 @@ def check_password() -> bool:
 # ============================================================================
 
 def get_adjusted_schedule(settings: Dict) -> Dict:
-    """Get schedule adjusted for any offsets from skipped sessions."""
     offset = settings.get("schedule_offset", 0)
     if offset == 0:
         return BASE_SCHEDULE.copy()
-
-    # Shift the schedule by offset days
     adjusted = {}
     for day in range(7):
         original_day = (day - offset) % 7
@@ -355,43 +446,33 @@ def get_adjusted_schedule(settings: Dict) -> Dict:
 
 
 def get_today_workout_with_settings(settings: Dict) -> Tuple[str, List[Dict]]:
-    """Get today's scheduled workout considering offsets and holiday mode."""
     if settings.get("holiday_mode", False):
         return "Holiday", []
-
     schedule = get_adjusted_schedule(settings)
     day_of_week = datetime.now().weekday()
     workout_name = schedule[day_of_week]
-
     if workout_name == "Rest":
         return "Rest", []
-
     return workout_name, EXERCISES.get(workout_name, [])
 
 
 def get_next_training_day(settings: Dict) -> Tuple[str, str, int]:
-    """Get the next training day info. Returns (workout_name, day_name, days_until)."""
     if settings.get("holiday_mode", False):
         return "Holiday", "N/A", 0
-
     schedule = get_adjusted_schedule(settings)
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-
     current_day = datetime.now().weekday()
     for i in range(1, 8):
         check_day = (current_day + i) % 7
         if schedule[check_day] != "Rest":
             return schedule[check_day], day_names[check_day], i
-
     return "Rest", "N/A", 7
 
 
 def get_week_schedule_preview(settings: Dict) -> List[Dict]:
-    """Get a preview of the week's schedule."""
     schedule = get_adjusted_schedule(settings)
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     today = datetime.now().weekday()
-
     preview = []
     for i in range(7):
         day = (today + i) % 7
@@ -408,24 +489,11 @@ def get_week_schedule_preview(settings: Dict) -> List[Dict]:
 # ============================================================================
 
 class AdaptiveCoach:
-    """
-    The brain of NeuroLegs - handles all progression logic.
-
-    Core Principles:
-    1. Double Progression: Volume (reps) before Intensity (load)
-    2. RPE-Adjusted Scoring: Performance quality matters
-    3. Multi-Session Analysis: Looks at last 3 sessions for smarter decisions
-    4. Plateau Detection: Proactive deload suggestions
-    5. Cold Start Handling: Sensible defaults for new users
-    """
-
     def __init__(self, logs: Dict):
         self.logs = logs
         self.exercise_history = logs.get("exercises", {})
 
-    def calculate_set_score(self, reps: int, rpe: float,
-                           min_range: int, max_range: int) -> float:
-        """Calculate performance score for a single set (0-100)."""
+    def calculate_set_score(self, reps: int, rpe: float, min_range: int, max_range: int) -> float:
         if reps < min_range:
             rep_score = max(0, (reps / min_range) * 30)
         elif reps > max_range:
@@ -433,29 +501,21 @@ class AdaptiveCoach:
         else:
             range_position = (reps - min_range) / (max_range - min_range)
             rep_score = 30 + (range_position * 70)
-
         rpe_modifier = 1.0 + (9 - rpe) * 0.05
         rpe_modifier = max(0.85, min(1.20, rpe_modifier))
-
         return min(100, rep_score * rpe_modifier)
 
-    def calculate_session_score(self, sets_data: List[Dict],
-                                min_range: int, max_range: int) -> Tuple[float, str]:
-        """Calculate overall session score for an exercise."""
+    def calculate_session_score(self, sets_data: List[Dict], min_range: int, max_range: int) -> Tuple[float, str]:
         if not sets_data:
             return 0, "No data"
-
         scores = []
         reps_list = []
-
         for set_data in sets_data:
             reps = set_data.get("reps", 0)
             rpe = set_data.get("rpe", 8)
             reps_list.append(reps)
             scores.append(self.calculate_set_score(reps, rpe, min_range, max_range))
-
         avg_score = sum(scores) / len(scores)
-
         rep_variance = max(reps_list) - min(reps_list)
         if rep_variance <= 1:
             consistency = "Excellent consistency"
@@ -465,35 +525,21 @@ class AdaptiveCoach:
         else:
             consistency = "Work on set-to-set consistency"
             avg_score *= 0.95
-
         return min(100, avg_score), consistency
 
     def get_exercise_history(self, exercise_name: str, limit: int = 10) -> List[Dict]:
-        """Get recent history for an exercise."""
         history = self.exercise_history.get(exercise_name, [])
         return sorted(history, key=lambda x: x.get("date", ""), reverse=True)[:limit]
 
     def analyze_multi_session_trend(self, exercise_name: str, num_sessions: int = 3) -> Dict:
-        """Analyze performance trend across multiple sessions."""
         history = self.get_exercise_history(exercise_name, num_sessions + 2)
-
         if len(history) < 1:
-            return {
-                "has_data": False,
-                "trend": "NO_DATA",
-                "avg_weight": None,
-                "avg_reps": None,
-                "avg_rpe": None,
-                "weight_trend": 0,
-                "rep_trend": 0,
-                "rpe_trend": 0,
-                "sessions_analyzed": 0
-            }
+            return {"has_data": False, "trend": "NO_DATA", "avg_weight": None, "avg_reps": None,
+                    "avg_rpe": None, "weight_trend": 0, "rep_trend": 0, "rpe_trend": 0, "sessions_analyzed": 0}
 
         weights = []
         all_reps = []
         all_rpe = []
-
         for session in history[:num_sessions]:
             weights.append(session.get("weight", 0))
             sets = session.get("sets", [])
@@ -505,20 +551,15 @@ class AdaptiveCoach:
         avg_reps = sum(all_reps) / len(all_reps) if all_reps else 0
         avg_rpe = sum(all_rpe) / len(all_rpe) if all_rpe else 8
 
-        weight_trend = 0
-        rep_trend = 0
-        rpe_trend = 0
-
+        weight_trend = rep_trend = rpe_trend = 0
         if len(history) >= 2:
             recent_weight = history[0].get("weight", 0)
             older_weights = [h.get("weight", 0) for h in history[1:num_sessions]]
             if older_weights:
-                old_avg_weight = sum(older_weights) / len(older_weights)
-                weight_trend = recent_weight - old_avg_weight
+                weight_trend = recent_weight - sum(older_weights) / len(older_weights)
 
             recent_reps = [s.get("reps", 0) for s in history[0].get("sets", [])]
             recent_avg_reps = sum(recent_reps) / len(recent_reps) if recent_reps else 0
-
             older_reps = []
             for h in history[1:num_sessions]:
                 older_reps.extend([s.get("reps", 0) for s in h.get("sets", [])])
@@ -527,7 +568,6 @@ class AdaptiveCoach:
 
             recent_rpe = [s.get("rpe", 8) for s in history[0].get("sets", [])]
             recent_avg_rpe = sum(recent_rpe) / len(recent_rpe) if recent_rpe else 8
-
             older_rpe = []
             for h in history[1:num_sessions]:
                 older_rpe.extend([s.get("rpe", 8) for s in h.get("sets", [])])
@@ -543,22 +583,13 @@ class AdaptiveCoach:
         else:
             trend = "VARIABLE"
 
-        return {
-            "has_data": True,
-            "trend": trend,
-            "avg_weight": round(avg_weight, 1),
-            "avg_reps": round(avg_reps, 1),
-            "avg_rpe": round(avg_rpe, 1),
-            "weight_trend": round(weight_trend, 1),
-            "rep_trend": round(rep_trend, 1),
-            "rpe_trend": round(rpe_trend, 1),
-            "sessions_analyzed": min(len(history), num_sessions)
-        }
+        return {"has_data": True, "trend": trend, "avg_weight": round(avg_weight, 1),
+                "avg_reps": round(avg_reps, 1), "avg_rpe": round(avg_rpe, 1),
+                "weight_trend": round(weight_trend, 1), "rep_trend": round(rep_trend, 1),
+                "rpe_trend": round(rpe_trend, 1), "sessions_analyzed": min(len(history), num_sessions)}
 
     def detect_plateau(self, exercise_name: str) -> Tuple[bool, int, str]:
-        """Detect if user is plateaued on an exercise."""
         history = self.get_exercise_history(exercise_name, 6)
-
         if len(history) < 3:
             return False, 0, "Keep training - building baseline data"
 
@@ -566,140 +597,85 @@ class AdaptiveCoach:
         for i in range(len(history) - 1):
             current = history[i]
             previous = history[i + 1]
-
             current_weight = current.get("weight", 0)
             previous_weight = previous.get("weight", 0)
             current_reps = sum([s.get("reps", 0) for s in current.get("sets", [])])
             previous_reps = sum([s.get("reps", 0) for s in previous.get("sets", [])])
-
             if current_weight <= previous_weight and current_reps <= previous_reps:
                 stall_count += 1
             else:
                 break
 
         trend = self.analyze_multi_session_trend(exercise_name, 3)
-
         if trend["has_data"] and trend["rpe_trend"] > 0.5 and trend["trend"] != "IMPROVING":
             if stall_count >= 2:
-                return True, stall_count, "RPE increasing without progress - fatigue accumulating. Consider a deload."
+                return True, stall_count, "RPE increasing without progress - fatigue accumulating."
 
         if stall_count >= 4:
-            return True, stall_count, "Significant plateau! Time for a strategic deload (85% weight for 1 week)."
+            return True, stall_count, "Significant plateau! Time for a strategic deload."
         elif stall_count >= 2:
-            return True, stall_count, "Minor stall detected. Focus on technique and mind-muscle connection."
-
+            return True, stall_count, "Minor stall detected. Focus on technique."
         return False, stall_count, "Progressing well!"
 
     def get_next_target(self, exercise_name: str, exercise_config: Dict) -> Dict:
-        """Calculate the target for the next session."""
         history = self.get_exercise_history(exercise_name, 6)
         min_range, max_range = exercise_config["rep_range"]
-        num_sets = exercise_config["sets"]
         is_compound = exercise_name in COMPOUND_EXERCISES
         increment = WEIGHT_INCREMENT["compound"] if is_compound else WEIGHT_INCREMENT["isolation"]
 
         if not history:
             starting_weight = STARTING_WEIGHTS.get(exercise_name, 20)
-            return {
-                "weight": starting_weight,
-                "reps_per_set": min_range,
-                "recommendation": "BASELINE",
-                "message": f"First time! Start with {starting_weight}kg for {min_range} reps. Focus on perfect form.",
-                "confidence": 50,
-                "is_new": True,
-                "trend_info": None
-            }
+            return {"weight": starting_weight, "reps_per_set": min_range, "recommendation": "BASELINE",
+                    "message": f"First time! Start with {starting_weight}kg for {min_range} reps.",
+                    "confidence": 50, "is_new": True, "trend_info": None}
 
         trend = self.analyze_multi_session_trend(exercise_name, 3)
-
         last_session = history[0]
         last_weight = last_session.get("weight", 0)
         last_sets = last_session.get("sets", [])
 
         if len(history) == 1:
-            return {
-                "weight": last_weight,
-                "reps_per_set": min_range + 1,
-                "recommendation": "BUILD",
-                "message": f"Second session! Use {last_weight}kg again, aim for {min_range + 1} reps per set.",
-                "confidence": 60,
-                "is_new": False,
-                "trend_info": trend,
-                "previous": f"Last: {last_weight}kg × {[s.get('reps', 0) for s in last_sets]}"
-            }
-
-        session_score, consistency = self.calculate_session_score(last_sets, min_range, max_range)
+            return {"weight": last_weight, "reps_per_set": min_range + 1, "recommendation": "BUILD",
+                    "message": f"Second session! Use {last_weight}kg again, aim for {min_range + 1} reps.",
+                    "confidence": 60, "is_new": False, "trend_info": trend,
+                    "previous": f"Last: {last_weight}kg × {[s.get('reps', 0) for s in last_sets]}"}
 
         avg_reps = sum([s.get("reps", 0) for s in last_sets]) / len(last_sets)
         avg_rpe = sum([s.get("rpe", 8) for s in last_sets]) / len(last_sets)
         min_reps = min([s.get("reps", 0) for s in last_sets])
-
         is_plateaued, stall_count, plateau_msg = self.detect_plateau(exercise_name)
 
         if is_plateaued and stall_count >= 4:
-            return {
-                "weight": round(last_weight * 0.85, 1),
-                "reps_per_set": min_range,
-                "recommendation": "DELOAD",
-                "message": f"Strategic deload! Use {round(last_weight * 0.85, 1)}kg for {min_range} reps.",
-                "confidence": 95,
-                "plateau_info": plateau_msg,
-                "is_new": False,
-                "trend_info": trend
-            }
+            return {"weight": round(last_weight * 0.85, 1), "reps_per_set": min_range,
+                    "recommendation": "DELOAD", "message": f"Strategic deload! Use {round(last_weight * 0.85, 1)}kg.",
+                    "confidence": 95, "plateau_info": plateau_msg, "is_new": False, "trend_info": trend}
 
         if min_reps >= max_range and avg_rpe <= 8 and trend["trend"] in ["IMPROVING", "STABLE"]:
             new_weight = last_weight + increment
-            return {
-                "weight": new_weight,
-                "reps_per_set": min_range,
-                "recommendation": "PROGRESS",
-                "message": f"You've earned it! Add weight: {new_weight}kg × {min_range} reps",
-                "confidence": 90,
-                "previous": f"Last 3 avg: {trend['avg_weight']}kg × {trend['avg_reps']:.0f} reps @ RPE {trend['avg_rpe']:.0f}",
-                "is_new": False,
-                "trend_info": trend
-            }
+            return {"weight": new_weight, "reps_per_set": min_range, "recommendation": "PROGRESS",
+                    "message": f"Add weight! {new_weight}kg × {min_range} reps", "confidence": 90,
+                    "previous": f"Last 3 avg: {trend['avg_weight']}kg × {trend['avg_reps']:.0f} reps",
+                    "is_new": False, "trend_info": trend}
 
         if avg_reps >= max_range - 0.5 and avg_rpe <= 8.5:
-            return {
-                "weight": last_weight,
-                "reps_per_set": max_range,
-                "recommendation": "PUSH",
-                "message": f"Almost there! Hit {max_range} on ALL sets to unlock +{increment}kg.",
-                "confidence": 80,
-                "previous": f"Last: {last_weight}kg × {[s.get('reps', 0) for s in last_sets]}",
-                "is_new": False,
-                "trend_info": trend
-            }
+            return {"weight": last_weight, "reps_per_set": max_range, "recommendation": "PUSH",
+                    "message": f"Hit {max_range} on ALL sets to unlock +{increment}kg.", "confidence": 80,
+                    "previous": f"Last: {last_weight}kg × {[s.get('reps', 0) for s in last_sets]}",
+                    "is_new": False, "trend_info": trend}
 
         if avg_reps >= min_range:
             target_reps = min(int(avg_reps) + 1, max_range)
-            return {
-                "weight": last_weight,
-                "reps_per_set": target_reps,
-                "recommendation": "BUILD",
-                "message": f"Building strength. Target: {last_weight}kg × {target_reps} reps.",
-                "confidence": 75,
-                "previous": f"Last: {last_weight}kg × {[s.get('reps', 0) for s in last_sets]}",
-                "is_new": False,
-                "trend_info": trend
-            }
+            return {"weight": last_weight, "reps_per_set": target_reps, "recommendation": "BUILD",
+                    "message": f"Target: {last_weight}kg × {target_reps} reps.", "confidence": 75,
+                    "previous": f"Last: {last_weight}kg × {[s.get('reps', 0) for s in last_sets]}",
+                    "is_new": False, "trend_info": trend}
 
-        return {
-            "weight": last_weight,
-            "reps_per_set": min_range,
-            "recommendation": "CONSOLIDATE",
-            "message": f"Consolidate gains. Same weight ({last_weight}kg), solid {min_range} reps.",
-            "confidence": 70,
-            "previous": f"Last: {last_weight}kg × {[s.get('reps', 0) for s in last_sets]} @ RPE {avg_rpe:.0f}",
-            "is_new": False,
-            "trend_info": trend,
-            "plateau_info": plateau_msg if is_plateaued else None
-        }
+        return {"weight": last_weight, "reps_per_set": min_range, "recommendation": "CONSOLIDATE",
+                "message": f"Same weight ({last_weight}kg), solid {min_range} reps.", "confidence": 70,
+                "previous": f"Last: {last_weight}kg @ RPE {avg_rpe:.0f}", "is_new": False,
+                "trend_info": trend, "plateau_info": plateau_msg if is_plateaued else None}
 
     def get_workout_summary(self, workout_name: str, exercises: List[Dict]) -> List[Dict]:
-        """Generate targets for all exercises in a workout."""
         summary = []
         for ex in exercises:
             target = self.get_next_target(ex["name"], ex)
@@ -708,37 +684,17 @@ class AdaptiveCoach:
         return summary
 
     def get_all_time_stats(self) -> Dict:
-        """Calculate comprehensive all-time statistics."""
         if not self.exercise_history:
             return None
-
-        stats = {
-            "total_sessions": 0,
-            "total_sets": 0,
-            "total_reps": 0,
-            "total_volume": 0,
-            "first_workout": None,
-            "last_workout": None,
-            "exercises": {},
-            "pr_list": []
-        }
-
+        stats = {"total_sessions": 0, "total_sets": 0, "total_reps": 0, "total_volume": 0,
+                 "first_workout": None, "last_workout": None, "exercises": {}, "pr_list": []}
         all_dates = []
 
         for exercise_name, history in self.exercise_history.items():
             if not history:
                 continue
-
-            ex_stats = {
-                "sessions": len(history),
-                "current_weight": 0,
-                "max_weight": 0,
-                "starting_weight": 0,
-                "weight_gain": 0,
-                "total_volume": 0,
-                "avg_reps": 0
-            }
-
+            ex_stats = {"sessions": len(history), "current_weight": 0, "max_weight": 0,
+                        "starting_weight": 0, "weight_gain": 0, "total_volume": 0, "avg_reps": 0}
             all_reps = []
             weights = []
 
@@ -746,11 +702,9 @@ class AdaptiveCoach:
                 date = session.get("date", "")
                 if date:
                     all_dates.append(date)
-
                 weight = session.get("weight", 0)
                 weights.append(weight)
                 sets = session.get("sets", [])
-
                 for s in sets:
                     reps = s.get("reps", 0)
                     all_reps.append(reps)
@@ -763,150 +717,79 @@ class AdaptiveCoach:
                 ex_stats["max_weight"] = max(weights)
                 ex_stats["starting_weight"] = weights[-1]
                 ex_stats["weight_gain"] = weights[0] - weights[-1]
-
             if all_reps:
                 ex_stats["avg_reps"] = round(sum(all_reps) / len(all_reps), 1)
-
-            ex_stats["total_volume"] = sum([w * sum([s.get("reps", 0) for s in h.get("sets", [])]) for h, w in zip(history, weights)])
-
+            ex_stats["total_volume"] = sum([w * sum([s.get("reps", 0) for s in h.get("sets", [])])
+                                           for h, w in zip(history, weights)])
             stats["exercises"][exercise_name] = ex_stats
             stats["total_sessions"] += len(history)
-
             if ex_stats["max_weight"] > 0:
-                stats["pr_list"].append({
-                    "exercise": exercise_name,
-                    "weight": ex_stats["max_weight"]
-                })
+                stats["pr_list"].append({"exercise": exercise_name, "weight": ex_stats["max_weight"]})
 
         if all_dates:
             stats["first_workout"] = min(all_dates)[:10]
             stats["last_workout"] = max(all_dates)[:10]
-
         stats["pr_list"] = sorted(stats["pr_list"], key=lambda x: x["weight"], reverse=True)
-
         return stats
 
 
 # ============================================================================
-# UI HELPER FUNCTIONS
+# UI HELPERS
 # ============================================================================
 
 def get_brain_status() -> Tuple[str, str, str]:
-    """Determine current brain/activity status based on time."""
     hour = datetime.now().hour
-
     if 6 <= hour < 9:
-        return "🌅", "Morning Prep", "Fuel up and hydrate. Big day ahead."
+        return "🌅", "Morning Prep", "Fuel up and hydrate."
     elif 9 <= hour < 12:
-        return "🧠", "Deep Work AM", "Peak cognitive hours. Study hard."
+        return "🧠", "Deep Work AM", "Peak cognitive hours."
     elif 12 <= hour < 14:
-        return "🍽️", "Lunch & Digest", "Eat your meal, walk 15 min after."
+        return "🍽️", "Lunch & Digest", "Eat, walk 15 min after."
     elif 14 <= hour < 17:
-        return "🧠", "Deep Work PM", "Second study block. Stay focused."
+        return "🧠", "Deep Work PM", "Second study block."
     elif 17 <= hour < 20:
-        return "💪", "GYM MODE", "Training window! Time to grow those legs."
+        return "💪", "GYM MODE", "Time to grow those legs!"
     elif 20 <= hour < 22:
-        return "🍽️", "Dinner & Wind Down", "Eat, relax, prepare for sleep."
+        return "🍽️", "Dinner & Wind Down", "Eat, relax."
     elif 22 <= hour < 24:
-        return "🌙", "Recovery Mode", "Sleep is gains. Aim for 8 hours."
+        return "🌙", "Recovery Mode", "Sleep is gains."
     else:
-        return "😴", "Sleep Time", "You should be sleeping! Recovery is key."
+        return "😴", "Sleep Time", "Recovery is key."
 
 
 def create_exercise_link(name: str, url: str) -> str:
-    """Create a markdown hyperlink for an exercise."""
     return f"[{name}]({url})"
 
 
 def format_recommendation_badge(recommendation: str) -> str:
-    """Format recommendation as a colored badge."""
-    colors = {
-        "PROGRESS": "🟢",
-        "PUSH": "🔵",
-        "BUILD": "🟡",
-        "CONSOLIDATE": "🟠",
-        "DELOAD": "🔴",
-        "BASELINE": "⚪"
-    }
+    colors = {"PROGRESS": "🟢", "PUSH": "🔵", "BUILD": "🟡", "CONSOLIDATE": "🟠", "DELOAD": "🔴", "BASELINE": "⚪"}
     return f"{colors.get(recommendation, '⚪')} {recommendation}"
 
 
 def format_trend_badge(trend: str) -> str:
-    """Format trend as indicator."""
-    indicators = {
-        "IMPROVING": "📈 Improving",
-        "STABLE": "➡️ Stable",
-        "DECLINING": "📉 Declining",
-        "VARIABLE": "〰️ Variable",
-        "NO_DATA": "❓ No Data"
-    }
+    indicators = {"IMPROVING": "📈", "STABLE": "➡️", "DECLINING": "📉", "VARIABLE": "〰️", "NO_DATA": "❓"}
     return indicators.get(trend, "❓")
 
 
 def get_holiday_css() -> str:
-    """Return CSS for holiday/frozen mode."""
-    return """
-        <style>
-        .stApp {
-            background: linear-gradient(135deg, #e0f7fa 0%, #b2ebf2 50%, #80deea 100%) !important;
-        }
-        .stMarkdown, .stText, p, h1, h2, h3, span, label {
-            color: #00acc1 !important;
-        }
-        .stButton > button {
-            background-color: #4dd0e1 !important;
-            color: white !important;
-            border: 2px solid #00bcd4 !important;
-        }
-        .stTabs [data-baseweb="tab-list"] {
-            background-color: rgba(178, 235, 242, 0.5) !important;
-        }
-        .stMetric {
-            background-color: rgba(224, 247, 250, 0.7) !important;
-            border-radius: 10px;
-            padding: 10px;
-        }
-        div[data-testid="stExpander"] {
-            background-color: rgba(178, 235, 242, 0.3) !important;
-            border: 1px solid #4dd0e1 !important;
-        }
-        .frozen-banner {
-            background: linear-gradient(90deg, #00bcd4, #4dd0e1, #00bcd4);
-            padding: 20px;
-            border-radius: 15px;
-            text-align: center;
-            margin: 20px 0;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.7; }
-            100% { opacity: 1; }
-        }
-        </style>
-    """
+    return """<style>
+        .stApp { background: linear-gradient(135deg, #e0f7fa 0%, #b2ebf2 50%, #80deea 100%) !important; }
+        .frozen-banner { background: linear-gradient(90deg, #00bcd4, #4dd0e1, #00bcd4);
+            padding: 20px; border-radius: 15px; text-align: center; margin: 20px 0; }
+        </style>"""
 
 
 def get_normal_css() -> str:
-    """Return normal CSS."""
-    return """
-        <style>
+    return """<style>
         .stApp { max-width: 100%; }
-        .stButton > button {
-            width: 100%;
-            padding: 0.75rem 1rem;
-            font-size: 1.1rem;
-            border-radius: 10px;
-            margin: 0.25rem 0;
-        }
-        .stNumberInput > div > div > input {
-            text-align: center;
-            font-size: 1.2rem;
-        }
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-        </style>
-    """
+        .stButton > button { width: 100%; padding: 0.75rem 1rem; font-size: 1.1rem; border-radius: 10px; }
+        .stNumberInput > div > div > input { text-align: center; font-size: 1.2rem; }
+        #MainMenu {visibility: hidden;} footer {visibility: hidden;}
+        .pr-celebration { font-size: 2rem; text-align: center; padding: 20px;
+            background: linear-gradient(90deg, #ffd700, #ffec8b, #ffd700);
+            border-radius: 15px; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+        </style>"""
 
 
 # ============================================================================
@@ -914,77 +797,50 @@ def get_normal_css() -> str:
 # ============================================================================
 
 def main():
-    st.set_page_config(
-        page_title="NeuroLegs",
-        page_icon="🦵",
-        layout="centered",
-        initial_sidebar_state="collapsed"
-    )
+    st.set_page_config(page_title="NeuroLegs", page_icon="🦵", layout="centered", initial_sidebar_state="collapsed")
 
-    # Password protection
     if not check_password():
         return
 
-    # Load data
     logs = load_logs()
     settings = load_settings()
     coach = AdaptiveCoach(logs)
 
-    # Apply CSS based on holiday mode
     if settings.get("holiday_mode", False):
         st.markdown(get_holiday_css(), unsafe_allow_html=True)
     else:
         st.markdown(get_normal_css(), unsafe_allow_html=True)
 
-    # Header
-    if settings.get("holiday_mode", False):
-        st.markdown("""
-            <div class="frozen-banner">
-                <h1>❄️ HOLIDAY MODE ❄️</h1>
-                <p>Training is frozen. Enjoy your break!</p>
-            </div>
-        """, unsafe_allow_html=True)
-    else:
+    # Header with streak
+    if not settings.get("holiday_mode", False):
+        streak = calculate_streak(logs, settings)
         status_emoji, status_name, status_msg = get_brain_status()
-        col1, col2 = st.columns([1, 3])
+        col1, col2, col3 = st.columns([1, 2, 1])
         with col1:
             st.markdown(f"# {status_emoji}")
         with col2:
             st.markdown(f"### {status_name}")
             st.caption(status_msg)
+        with col3:
+            st.metric("🔥 Streak", f"{streak['current_streak_weeks']}w")
+    else:
+        st.markdown('<div class="frozen-banner"><h1>❄️ HOLIDAY MODE ❄️</h1></div>', unsafe_allow_html=True)
 
     st.divider()
 
     # Navigation
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "🏋️ Today", "📝 Log", "📊 Progress", "📈 Analytics", "🍽️ Nutrition", "⚙️ Settings"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "🏋️ Today", "📝 Log", "📊 Progress", "📈 Analytics", "🔢 Tools", "🍽️ Nutrition", "⚙️ Settings"
     ])
 
-    # ========== TAB 1: TODAY'S WORKOUT ==========
+    # ========== TAB 1: TODAY ==========
     with tab1:
         if settings.get("holiday_mode", False):
-            st.markdown("## ❄️ Training Frozen")
-            st.info("""
-            **Holiday Mode Active**
-
-            Your training schedule is paused. When you return:
-            - All your progress data is preserved
-            - Your targets will be exactly where you left off
-            - The algorithm will ease you back in
-
-            Go to Settings to deactivate when ready!
-            """)
-
-            # Show when holiday started
-            if settings.get("holiday_start"):
-                start_date = settings["holiday_start"][:10]
-                days_off = (datetime.now() - datetime.fromisoformat(start_date)).days
-                st.caption(f"❄️ Holiday started: {start_date} ({days_off} days ago)")
-
+            st.info("Training frozen. Go to Settings to deactivate.")
         else:
             workout_name, exercises = get_today_workout_with_settings(settings)
 
-            # Week schedule preview
+            # Week preview
             st.markdown("### 📅 This Week")
             week_preview = get_week_schedule_preview(settings)
             cols = st.columns(7)
@@ -1001,234 +857,147 @@ def main():
 
             if workout_name == "Rest":
                 st.markdown("## 😴 Rest Day")
-                st.info("""
-                **Recovery is when you grow!**
-
-                - 🚶 Light walking (10-15 min)
-                - 🧘 Stretching / Mobility work
-                - 💧 Stay hydrated (3+ liters)
-                - 😴 Prioritize 8 hours of sleep
-                """)
-
-                # Skip session button for rest day - user might want to move schedule
-                st.markdown("---")
+                st.info("Recovery is when you grow! Light walking, stretching, hydration.")
                 next_workout, next_day, days_until = get_next_training_day(settings)
-                st.write(f"**Next:** {next_workout} on {next_day} ({days_until} day{'s' if days_until > 1 else ''})")
-
+                st.write(f"**Next:** {next_workout} on {next_day}")
             else:
                 st.markdown(f"## {workout_name}")
-                st.caption(f"📅 {datetime.now().strftime('%A, %B %d')}")
 
-                # SKIP SESSION BUTTON
+                # Skip session
                 with st.expander("⏭️ Skip Today's Session"):
-                    st.warning("Can't train today? Choose how to handle it:")
-
-                    skip_col1, skip_col2 = st.columns(2)
-
-                    with skip_col1:
-                        if st.button("🔄 Push Schedule +1 Day", use_container_width=True,
-                                    help="Move ALL future sessions forward by 1 day"):
-                            # Record the skip
-                            if "skipped_sessions" not in logs:
-                                logs["skipped_sessions"] = []
-                            logs["skipped_sessions"].append({
-                                "date": datetime.now().isoformat(),
-                                "workout": workout_name,
-                                "action": "push_schedule"
-                            })
-
-                            # Increment schedule offset
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("🔄 Push +1 Day", use_container_width=True):
+                            if "skipped_sessions" not in logs: logs["skipped_sessions"] = []
+                            logs["skipped_sessions"].append({"date": datetime.now().isoformat(), "workout": workout_name, "action": "push"})
                             settings["schedule_offset"] = settings.get("schedule_offset", 0) + 1
                             save_settings(settings)
                             save_logs(logs)
-                            st.success("Schedule pushed! Tomorrow will be " + workout_name)
                             st.rerun()
-
-                    with skip_col2:
-                        if st.button("⏩ Skip & Continue", use_container_width=True,
-                                    help="Skip this workout, keep schedule unchanged"):
-                            # Record the skip
-                            if "skipped_sessions" not in logs:
-                                logs["skipped_sessions"] = []
-                            logs["skipped_sessions"].append({
-                                "date": datetime.now().isoformat(),
-                                "workout": workout_name,
-                                "action": "skip_only"
-                            })
+                    with c2:
+                        if st.button("⏩ Skip Only", use_container_width=True):
+                            if "skipped_sessions" not in logs: logs["skipped_sessions"] = []
+                            logs["skipped_sessions"].append({"date": datetime.now().isoformat(), "workout": workout_name, "action": "skip"})
                             save_logs(logs)
-                            st.success("Session skipped. Next workout continues as scheduled.")
-                            st.info("💡 Tip: If you miss multiple sessions, consider Holiday Mode!")
-
-                    st.caption("Skipped sessions are logged for your records.")
+                            st.success("Skipped!")
 
                 st.divider()
 
-                # Get targets for all exercises
                 targets = coach.get_workout_summary(workout_name, exercises)
-
                 for target in targets:
                     ex = target["exercise"]
-                    with st.container():
-                        st.markdown(f"### {create_exercise_link(ex['name'], ex['video'])}")
+                    st.markdown(f"### {create_exercise_link(ex['name'], ex['video'])}")
+                    c1, c2 = st.columns([2, 1])
+                    with c1:
+                        st.markdown(f"**{target['weight']}kg × {target['reps_per_set']} × {ex['sets']} sets**")
+                        if "previous" in target:
+                            st.caption(target["previous"])
+                    with c2:
+                        st.markdown(format_recommendation_badge(target["recommendation"]))
 
-                        col1, col2 = st.columns([2, 1])
-                        with col1:
-                            if target.get("is_new"):
-                                st.markdown(f"**Target:** {target['weight']}kg × {target['reps_per_set']} reps × {ex['sets']} sets")
-                                st.caption("🆕 First time - establish your baseline!")
-                            else:
-                                st.markdown(f"**Target:** {target['weight']}kg × {target['reps_per_set']} reps × {ex['sets']} sets")
-                                if "previous" in target:
-                                    st.caption(target["previous"])
+                    with st.expander("💡 Coach + Warm-up"):
+                        st.write(target["message"])
+                        st.caption(f"Rest: {ex['rest']}")
 
-                        with col2:
-                            st.markdown(format_recommendation_badge(target["recommendation"]))
-                            if target.get("trend_info") and target["trend_info"].get("has_data"):
-                                st.caption(format_trend_badge(target["trend_info"]["trend"]))
+                        # Warm-up sets
+                        if target["weight"] and target["weight"] >= 30:
+                            st.markdown("**Warm-up Protocol:**")
+                            warmup = generate_warmup_sets(target["weight"], target["reps_per_set"])
+                            for w in warmup:
+                                st.write(f"• {w['weight']}kg × {w['reps']} - {w['notes']}")
+                    st.divider()
 
-                        with st.expander("💡 Coach's Note"):
-                            st.write(target["message"])
-                            st.caption(f"Rest: {ex['rest']} | {ex['notes']}")
-                            if target.get("plateau_info"):
-                                st.warning(target["plateau_info"])
-
-                        st.divider()
-
-    # ========== TAB 2: WORKOUT LOGGER ==========
+    # ========== TAB 2: LOG ==========
     with tab2:
         if settings.get("holiday_mode", False):
-            st.markdown("## ❄️ Logging Disabled")
-            st.info("Deactivate Holiday Mode in Settings to log workouts.")
+            st.info("Logging disabled during holiday.")
         else:
             st.markdown("## 📝 Log Workout")
 
-            selected_workout = st.selectbox(
-                "Select Workout",
-                ["Legs A", "Legs B", "Legs C"],
-                index=["Legs A", "Legs B", "Legs C"].index(
-                    get_today_workout_with_settings(settings)[0]
-                ) if get_today_workout_with_settings(settings)[0] not in ["Rest", "Holiday"] else 0
-            )
+            workout_name, _ = get_today_workout_with_settings(settings)
+            selected_workout = st.selectbox("Workout", ["Legs A", "Legs B", "Legs C"],
+                index=["Legs A", "Legs B", "Legs C"].index(workout_name) if workout_name not in ["Rest", "Holiday"] else 0)
 
             selected_exercises = EXERCISES[selected_workout]
-            exercise_names = [ex["name"] for ex in selected_exercises]
-            selected_exercise_name = st.selectbox("Select Exercise", exercise_names)
+            selected_exercise_name = st.selectbox("Exercise", [ex["name"] for ex in selected_exercises])
             selected_exercise = next(ex for ex in selected_exercises if ex["name"] == selected_exercise_name)
 
             target = coach.get_next_target(selected_exercise_name, selected_exercise)
 
             st.markdown("---")
-            st.markdown(f"### 🎯 Today's Target")
+            c1, c2, c3 = st.columns(3)
+            with c1: st.metric("Target Weight", f"{target['weight']}kg")
+            with c2: st.metric("Target Reps", f"{target['reps_per_set']}")
+            with c3: st.metric("Status", target["recommendation"])
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Weight", f"{target['weight']}kg")
-            with col2:
-                st.metric("Reps/Set", f"{target['reps_per_set']}")
-            with col3:
-                st.metric("Status", target["recommendation"])
+            st.info(target["message"])
 
-            if target.get("is_new"):
-                st.info("🆕 " + target["message"])
-            else:
-                st.info(target["message"])
+            # Rest Timer
+            with st.expander("⏱️ Rest Timer"):
+                rest_time = selected_exercise.get("rest_seconds", 90)
+                st.write(f"Recommended rest: **{rest_time}s**")
+                timer_options = [30, 60, 90, 120, 180]
+                selected_time = st.select_slider("Timer (seconds)", options=timer_options, value=rest_time)
+                if st.button("▶️ Start Timer", use_container_width=True):
+                    progress_bar = st.progress(0)
+                    timer_text = st.empty()
+                    for i in range(selected_time, 0, -1):
+                        progress_bar.progress((selected_time - i) / selected_time)
+                        timer_text.markdown(f"### ⏱️ {i}s")
+                        time.sleep(1)
+                    progress_bar.progress(1.0)
+                    timer_text.markdown("### ✅ GO!")
+                    st.balloons()
 
             st.markdown("---")
-            st.markdown("### 📊 Log Your Sets")
+            st.markdown("### 📊 Log Sets")
 
-            weight = st.number_input(
-                "Weight (kg)",
-                min_value=0.0,
-                max_value=500.0,
-                value=float(target["weight"]) if target["weight"] else 20.0,
-                step=1.25,
-                format="%.2f"
-            )
+            weight = st.number_input("Weight (kg)", min_value=0.0, max_value=500.0,
+                                    value=float(target["weight"]) if target["weight"] else 20.0, step=1.25)
 
             sets_data = []
-            num_sets = selected_exercise["sets"]
-
-            cols = st.columns(num_sets)
+            cols = st.columns(selected_exercise["sets"])
             for i, col in enumerate(cols):
                 with col:
                     st.markdown(f"**Set {i+1}**")
-                    reps = st.number_input(
-                        "Reps",
-                        min_value=0,
-                        max_value=50,
-                        value=target["reps_per_set"],
-                        key=f"reps_{i}"
-                    )
-                    rpe = st.slider(
-                        "RPE",
-                        min_value=5.0,
-                        max_value=10.0,
-                        value=8.0,
-                        step=0.5,
-                        key=f"rpe_{i}"
-                    )
+                    reps = st.number_input("Reps", min_value=0, max_value=50, value=target["reps_per_set"], key=f"reps_{i}")
+                    rpe = st.slider("RPE", 5.0, 10.0, 8.0, 0.5, key=f"rpe_{i}")
                     sets_data.append({"reps": reps, "rpe": rpe})
 
-            with st.expander("📖 RPE Guide"):
-                st.markdown("""
-                | RPE | Reps in Reserve |
-                |-----|-----------------|
-                | 6 | 4+ more reps |
-                | 7 | 3 more reps |
-                | 8 | 2 more reps |
-                | 9 | 1 more rep |
-                | 10 | True failure |
-                """)
-
-            notes = st.text_area("Notes (optional)", placeholder="e.g., Felt strong, minor knee discomfort...")
+            notes = st.text_area("Notes", placeholder="How did it feel?")
 
             if st.button("✅ Save Workout", type="primary", use_container_width=True):
-                log_entry = {
-                    "date": datetime.now().isoformat(),
-                    "workout": selected_workout,
-                    "weight": weight,
-                    "sets": sets_data,
-                    "notes": notes
-                }
+                # Check for PR
+                is_pr, old_pr = check_for_new_pr(selected_exercise_name, weight, logs)
+
+                log_entry = {"date": datetime.now().isoformat(), "workout": selected_workout,
+                            "weight": weight, "sets": sets_data, "notes": notes}
 
                 if selected_exercise_name not in logs["exercises"]:
                     logs["exercises"][selected_exercise_name] = []
-
                 logs["exercises"][selected_exercise_name].insert(0, log_entry)
-                logs["workouts"].append({
-                    "date": datetime.now().isoformat(),
-                    "workout_type": selected_workout,
-                    "exercise": selected_exercise_name,
-                    "data": log_entry
-                })
-
+                logs["workouts"].append({"date": datetime.now().isoformat(), "workout_type": selected_workout,
+                                        "exercise": selected_exercise_name, "data": log_entry})
                 save_logs(logs)
 
-                coach = AdaptiveCoach(logs)
                 min_r, max_r = selected_exercise["rep_range"]
                 score, consistency = coach.calculate_session_score(sets_data, min_r, max_r)
 
-                st.success(f"Workout logged! Session Score: {score:.0f}/100")
-                st.caption(consistency)
+                if is_pr and weight > old_pr:
+                    st.markdown(f'<div class="pr-celebration">🏆 NEW PR! 🏆<br>{weight}kg (+{weight-old_pr}kg)</div>',
+                               unsafe_allow_html=True)
+                    st.balloons()
 
-                next_target = coach.get_next_target(selected_exercise_name, selected_exercise)
-                st.info(f"**Next session:** {next_target['message']}")
+                st.success(f"Logged! Score: {score:.0f}/100 - {consistency}")
 
-    # ========== TAB 3: EXERCISE PROGRESS ==========
+    # ========== TAB 3: PROGRESS ==========
     with tab3:
         st.markdown("## 📊 Exercise Progress")
-
-        if not logs["exercises"]:
-            st.info("No workout data yet. Start logging to see your progress!")
+        if not logs.get("exercises"):
+            st.info("No data yet. Start logging!")
         else:
-            tracked_exercises = list(logs["exercises"].keys())
-            selected_progress_exercise = st.selectbox(
-                "Select Exercise",
-                tracked_exercises,
-                key="progress_exercise"
-            )
-
-            history = logs["exercises"].get(selected_progress_exercise, [])
+            selected_ex = st.selectbox("Exercise", list(logs["exercises"].keys()), key="progress_ex")
+            history = logs["exercises"].get(selected_ex, [])
 
             if history:
                 df_data = []
@@ -1237,281 +1006,232 @@ def main():
                     weight = entry.get("weight", 0)
                     sets = entry.get("sets", [])
                     avg_reps = sum([s.get("reps", 0) for s in sets]) / max(1, len(sets))
-                    avg_rpe = sum([s.get("rpe", 8) for s in sets]) / max(1, len(sets))
-                    total_volume = weight * sum([s.get("reps", 0) for s in sets])
-
-                    df_data.append({
-                        "Date": date,
-                        "Weight (kg)": weight,
-                        "Avg Reps": round(avg_reps, 1),
-                        "Avg RPE": round(avg_rpe, 1),
-                        "Volume": round(total_volume, 0)
-                    })
+                    volume = weight * sum([s.get("reps", 0) for s in sets])
+                    df_data.append({"Date": date, "Weight": weight, "Avg Reps": round(avg_reps, 1), "Volume": volume})
 
                 df = pd.DataFrame(df_data)
 
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    current = df["Weight (kg)"].iloc[-1] if len(df) > 0 else 0
-                    starting = df["Weight (kg)"].iloc[0] if len(df) > 0 else 0
-                    delta = current - starting
-                    st.metric("Current", f"{current}kg", f"+{delta}kg" if delta > 0 else f"{delta}kg")
+                c1, c2, c3 = st.columns(3)
+                with c1: st.metric("Current", f"{df['Weight'].iloc[-1]}kg", f"+{df['Weight'].iloc[-1] - df['Weight'].iloc[0]}kg")
+                with c2: st.metric("PR", f"{df['Weight'].max()}kg")
+                with c3: st.metric("Sessions", len(history))
 
-                with col2:
-                    st.metric("Sessions", len(history))
+                fig = px.line(df, x="Date", y="Weight", markers=True)
+                fig.update_traces(line_color="#4CAF50")
+                st.plotly_chart(fig, use_container_width=True)
 
-                with col3:
-                    max_weight = df["Weight (kg)"].max()
-                    st.metric("PR", f"{max_weight}kg")
-
-                with col4:
-                    is_plateaued, stall_count, _ = coach.detect_plateau(selected_progress_exercise)
-                    st.metric("Stalls", stall_count, "⚠️" if is_plateaued else "✅")
-
-                fig_weight = px.line(df, x="Date", y="Weight (kg)", markers=True)
-                fig_weight.update_layout(height=250, margin=dict(l=0, r=0, t=30, b=0))
-                fig_weight.update_traces(line_color="#4CAF50")
-                st.plotly_chart(fig_weight, use_container_width=True)
-
-                fig_volume = px.bar(df, x="Date", y="Volume")
-                fig_volume.update_layout(height=200, margin=dict(l=0, r=0, t=30, b=0))
-                fig_volume.update_traces(marker_color="#667eea")
-                st.plotly_chart(fig_volume, use_container_width=True)
-
-                trend = coach.analyze_multi_session_trend(selected_progress_exercise, 3)
-                if trend["has_data"]:
-                    st.markdown("### 📈 3-Session Trend Analysis")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Weight Trend", f"{trend['weight_trend']:+.1f}kg")
-                    with col2:
-                        st.metric("Rep Trend", f"{trend['rep_trend']:+.1f}")
-                    with col3:
-                        st.metric("RPE Trend", f"{trend['rpe_trend']:+.1f}")
-
-                with st.expander("📜 Full History"):
-                    st.dataframe(df.iloc[::-1], use_container_width=True)
+                # 1RM Estimate
+                if history:
+                    latest = history[0]
+                    latest_weight = latest.get("weight", 0)
+                    latest_reps = sum([s.get("reps", 0) for s in latest.get("sets", [])]) / max(1, len(latest.get("sets", [])))
+                    est_1rm = calculate_1rm(latest_weight, int(latest_reps))
+                    st.info(f"**Estimated 1RM:** {est_1rm:.1f}kg (based on {latest_weight}kg × {int(latest_reps)} reps)")
 
     # ========== TAB 4: ANALYTICS ==========
     with tab4:
-        st.markdown("## 📈 Analytics Dashboard")
-
+        st.markdown("## 📈 Analytics")
         all_stats = coach.get_all_time_stats()
 
         if not all_stats:
-            st.info("No workout data yet. Start logging to see analytics!")
+            st.info("No data yet!")
         else:
-            st.markdown("### 🏆 All-Time Overview")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Sessions", all_stats["total_sessions"])
-            with col2:
-                st.metric("Total Sets", all_stats["total_sets"])
-            with col3:
-                st.metric("Total Reps", f"{all_stats['total_reps']:,}")
-            with col4:
-                st.metric("Total Volume", f"{all_stats['total_volume']:,.0f}kg")
+            streak = calculate_streak(logs, settings)
 
-            if all_stats["first_workout"]:
-                st.caption(f"Training since: {all_stats['first_workout']} | Last workout: {all_stats['last_workout']}")
+            # Streak display
+            st.markdown("### 🔥 Training Consistency")
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: st.metric("Current Streak", f"{streak['current_streak_weeks']} weeks")
+            with c2: st.metric("Longest Streak", f"{streak['longest_streak_weeks']} weeks")
+            with c3: st.metric("This Week", f"{streak['workouts_this_week']}/3")
+            with c4: st.metric("Consistency", f"{streak['consistency_percent']}%")
 
             st.divider()
 
-            st.markdown("### 🏅 Personal Records")
-            if all_stats["pr_list"]:
-                pr_df = pd.DataFrame(all_stats["pr_list"])
-                for i, row in pr_df.iterrows():
-                    medal = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else "  "))
-                    st.write(f"{medal} **{row['exercise']}**: {row['weight']}kg")
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: st.metric("Sessions", all_stats["total_sessions"])
+            with c2: st.metric("Sets", all_stats["total_sets"])
+            with c3: st.metric("Reps", f"{all_stats['total_reps']:,}")
+            with c4: st.metric("Volume", f"{all_stats['total_volume']:,.0f}kg")
 
             st.divider()
+            st.markdown("### 🏅 PRs")
+            for i, pr in enumerate(all_stats["pr_list"][:5]):
+                medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i]
+                st.write(f"{medal} **{pr['exercise']}**: {pr['weight']}kg")
 
-            st.markdown("### 📊 Exercise Breakdown")
-            ex_data = []
-            for ex_name, ex_stats in all_stats["exercises"].items():
-                ex_data.append({
-                    "Exercise": ex_name,
-                    "Sessions": ex_stats["sessions"],
-                    "Current": ex_stats["current_weight"],
-                    "Max": ex_stats["max_weight"],
-                    "Gain": ex_stats["weight_gain"],
-                    "Volume": ex_stats["total_volume"]
-                })
-
-            if ex_data:
-                ex_df = pd.DataFrame(ex_data)
-                st.dataframe(ex_df, use_container_width=True, hide_index=True)
-
-                st.markdown("### 📈 Weight Progress by Exercise")
-                fig = px.bar(
-                    ex_df,
-                    x="Exercise",
-                    y="Gain",
-                    color="Gain",
-                    color_continuous_scale="RdYlGn"
-                )
-                fig.update_layout(height=300, xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
-
-                st.markdown("### 🥧 Volume Distribution")
-                fig_pie = px.pie(ex_df, values="Volume", names="Exercise")
-                fig_pie.update_layout(height=350)
-                st.plotly_chart(fig_pie, use_container_width=True)
-
-            # Skipped sessions log
-            if logs.get("skipped_sessions"):
-                st.divider()
-                st.markdown("### ⏭️ Skipped Sessions Log")
-                skip_df = pd.DataFrame(logs["skipped_sessions"])
-                skip_df["date"] = skip_df["date"].str[:10]
-                st.dataframe(skip_df, use_container_width=True, hide_index=True)
-
-    # ========== TAB 5: NUTRITION ==========
+    # ========== TAB 5: TOOLS ==========
     with tab5:
-        st.markdown("## 🍽️ Nutrition Plan")
+        st.markdown("## 🔢 Training Tools")
 
-        st.markdown("### 📊 Your Macros")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Protein", f"{USER_PROFILE['protein_g']}g")
-        with col2:
-            st.metric("Carbs", f"{USER_PROFILE['carbs_g']}g")
-        with col3:
-            st.metric("Fats", f"{USER_PROFILE['fats_g']}g")
+        tool = st.radio("Select Tool", ["1RM Calculator", "Warm-up Generator", "Body Measurements"], horizontal=True)
 
-        calories = (USER_PROFILE['protein_g'] * 4 +
-                   USER_PROFILE['carbs_g'] * 4 +
-                   USER_PROFILE['fats_g'] * 9)
+        if tool == "1RM Calculator":
+            st.markdown("### 🏋️ 1RM Calculator")
+            c1, c2 = st.columns(2)
+            with c1:
+                calc_weight = st.number_input("Weight lifted (kg)", min_value=0.0, value=60.0, step=2.5)
+            with c2:
+                calc_reps = st.number_input("Reps performed", min_value=1, max_value=12, value=5)
+
+            if st.button("Calculate 1RM", type="primary"):
+                one_rm = calculate_1rm(calc_weight, calc_reps)
+                st.success(f"**Estimated 1RM: {one_rm:.1f}kg**")
+
+                st.markdown("### Training Weights")
+                percentages = get_percentages_from_1rm(one_rm)
+                for label, weight in percentages.items():
+                    st.write(f"• {label}: **{weight}kg**")
+
+        elif tool == "Warm-up Generator":
+            st.markdown("### 🔥 Warm-up Generator")
+            working_weight = st.number_input("Working weight (kg)", min_value=20.0, value=60.0, step=2.5)
+            working_reps = st.number_input("Working reps", min_value=1, max_value=20, value=5)
+
+            if st.button("Generate Warm-up", type="primary"):
+                warmup = generate_warmup_sets(working_weight, working_reps)
+                st.markdown("### Your Warm-up Protocol")
+                for i, w in enumerate(warmup, 1):
+                    st.write(f"**Set {i}:** {w['weight']}kg × {w['reps']} reps - *{w['notes']}*")
+                st.info(f"Then proceed to working sets: {working_weight}kg × {working_reps} reps")
+
+        else:  # Body Measurements
+            st.markdown("### 📏 Body Measurements")
+
+            with st.form("measurements_form"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    body_weight = st.number_input("Body Weight (kg)", min_value=30.0, max_value=200.0, value=61.1)
+                    left_thigh = st.number_input("Left Thigh (cm)", min_value=20.0, max_value=100.0, value=50.0)
+                    left_calf = st.number_input("Left Calf (cm)", min_value=20.0, max_value=60.0, value=35.0)
+                with c2:
+                    measure_notes = st.text_input("Notes", placeholder="Morning, relaxed...")
+                    right_thigh = st.number_input("Right Thigh (cm)", min_value=20.0, max_value=100.0, value=50.0)
+                    right_calf = st.number_input("Right Calf (cm)", min_value=20.0, max_value=60.0, value=35.0)
+
+                if st.form_submit_button("Save Measurements", type="primary"):
+                    if "measurements" not in logs:
+                        logs["measurements"] = []
+                    logs["measurements"].append({
+                        "date": datetime.now().isoformat()[:10],
+                        "body_weight": body_weight,
+                        "left_thigh": left_thigh,
+                        "right_thigh": right_thigh,
+                        "left_calf": left_calf,
+                        "right_calf": right_calf,
+                        "notes": measure_notes
+                    })
+                    save_logs(logs)
+                    st.success("Measurements saved!")
+
+            # Show history
+            if logs.get("measurements"):
+                st.markdown("### 📊 Measurement History")
+                mdf = pd.DataFrame(logs["measurements"])
+                st.dataframe(mdf, use_container_width=True, hide_index=True)
+
+                if len(mdf) > 1:
+                    fig = px.line(mdf, x="date", y=["left_thigh", "right_thigh"], markers=True,
+                                 labels={"value": "cm", "variable": "Measurement"})
+                    st.plotly_chart(fig, use_container_width=True)
+
+    # ========== TAB 6: NUTRITION ==========
+    with tab5:
+        pass  # Handled above in tools
+
+    with tab6:
+        st.markdown("## 🍽️ Nutrition")
+        c1, c2, c3 = st.columns(3)
+        with c1: st.metric("Protein", f"{USER_PROFILE['protein_g']}g")
+        with c2: st.metric("Carbs", f"{USER_PROFILE['carbs_g']}g")
+        with c3: st.metric("Fats", f"{USER_PROFILE['fats_g']}g")
+
+        calories = USER_PROFILE['protein_g'] * 4 + USER_PROFILE['carbs_g'] * 4 + USER_PROFILE['fats_g'] * 9
         st.caption(f"Total: ~{calories} kcal/day")
 
         st.divider()
-
-        st.markdown("### 🍴 Today's Meal Plan")
-        selected_plan = st.radio(
-            "Choose your plan:",
-            list(MEAL_PLANS.keys()),
-            index=list(MEAL_PLANS.keys()).index(settings.get("meal_plan", "Option 1 - Clean/Rice"))
-        )
+        selected_plan = st.radio("Meal Plan", list(MEAL_PLANS.keys()))
 
         if selected_plan != settings.get("meal_plan"):
             settings["meal_plan"] = selected_plan
             save_settings(settings)
 
         plan = MEAL_PLANS[selected_plan]
-        meal_order = ["breakfast", "lunch", "pre_workout", "post_workout", "dinner"]
-        meal_icons = {"breakfast": "🌅", "lunch": "☀️", "pre_workout": "⚡", "post_workout": "💪", "dinner": "🌙"}
-
-        for meal_key in meal_order:
+        for meal_key in ["breakfast", "lunch", "pre_workout", "post_workout", "dinner"]:
             meal = plan[meal_key]
-            with st.expander(f"{meal_icons[meal_key]} {meal['name']} ({meal['timing']})"):
+            with st.expander(f"{meal['name']} ({meal['timing']})"):
                 for item in meal["items"]:
                     st.write(f"• {item}")
-                if "note" in meal:
-                    st.info(f"💡 {meal['note']}")
 
-        st.divider()
-
-        st.markdown("### 💊 Supplements")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown("**Creatine**")
-            st.write(f"{USER_PROFILE['supplements']['creatine_g']}g daily")
-        with col2:
-            st.markdown("**Maltodextrin**")
-            st.write(f"{USER_PROFILE['supplements']['maltodextrin_g']}g")
-        with col3:
-            st.markdown("**Whey**")
-            st.write(f"{USER_PROFILE['supplements']['whey_g']}g")
-
-    # ========== TAB 6: SETTINGS ==========
-    with tab6:
+    # ========== TAB 7: SETTINGS ==========
+    with tab7:
         st.markdown("## ⚙️ Settings")
 
         # Holiday Mode
         st.markdown("### ❄️ Holiday Mode")
-        holiday_active = settings.get("holiday_mode", False)
-
-        if holiday_active:
-            st.info(f"❄️ Holiday Mode is **ACTIVE** since {settings.get('holiday_start', 'N/A')[:10]}")
-            if st.button("☀️ Deactivate Holiday Mode", type="primary", use_container_width=True):
+        if settings.get("holiday_mode"):
+            if st.button("☀️ Deactivate Holiday", type="primary", use_container_width=True):
                 settings["holiday_mode"] = False
-                settings["holiday_end"] = datetime.now().isoformat()
-
-                # Log the holiday period
-                if "holidays" not in logs:
-                    logs["holidays"] = []
-                logs["holidays"].append({
-                    "start": settings.get("holiday_start"),
-                    "end": datetime.now().isoformat()
-                })
-
                 save_settings(settings)
-                save_logs(logs)
-                st.success("Welcome back! Holiday Mode deactivated.")
                 st.rerun()
         else:
-            st.write("Going on vacation? Activate Holiday Mode to freeze your training schedule.")
-            if st.button("❄️ Activate Holiday Mode", use_container_width=True):
+            if st.button("❄️ Activate Holiday", use_container_width=True):
                 settings["holiday_mode"] = True
                 settings["holiday_start"] = datetime.now().isoformat()
                 save_settings(settings)
-                st.success("Holiday Mode activated! Enjoy your break.")
                 st.rerun()
 
         st.divider()
 
-        # Schedule Offset
-        st.markdown("### 📅 Schedule Management")
-        current_offset = settings.get("schedule_offset", 0)
-        st.write(f"Current schedule offset: **{current_offset} day(s)**")
+        # CSV Export/Import
+        st.markdown("### 💾 Data Export/Import")
 
-        if current_offset > 0:
-            st.caption("Your schedule has been shifted from skipped sessions.")
-            if st.button("🔄 Reset Schedule to Default", use_container_width=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            csv_data = export_logs_to_csv(logs)
+            st.download_button("📥 Download Workouts CSV", csv_data, "neurolegs_workouts.csv", "text/csv", use_container_width=True)
+        with c2:
+            measurements_csv = export_measurements_to_csv(logs)
+            st.download_button("📥 Download Measurements CSV", measurements_csv, "neurolegs_measurements.csv", "text/csv", use_container_width=True)
+
+        st.markdown("**Import CSV:**")
+        uploaded_file = st.file_uploader("Upload workout CSV", type=["csv"])
+        if uploaded_file:
+            if st.button("Import Data"):
+                content = uploaded_file.getvalue().decode("utf-8")
+                logs, count = import_csv_to_logs(content, logs)
+                if count > 0:
+                    save_logs(logs)
+                    st.success(f"Imported {count} workout entries!")
+                else:
+                    st.error("Import failed. Check CSV format.")
+
+        st.divider()
+
+        # Schedule reset
+        if settings.get("schedule_offset", 0) > 0:
+            st.markdown("### 📅 Schedule")
+            st.write(f"Offset: {settings['schedule_offset']} days")
+            if st.button("Reset Schedule"):
                 settings["schedule_offset"] = 0
                 save_settings(settings)
-                st.success("Schedule reset to default!")
                 st.rerun()
 
         st.divider()
 
-        # Data Management
-        st.markdown("### 💾 Data Management")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write(f"**Logged exercises:** {len(logs.get('exercises', {}))}")
-            st.write(f"**Total workouts:** {len(logs.get('workouts', []))}")
-
-        with col2:
-            st.write(f"**Skipped sessions:** {len(logs.get('skipped_sessions', []))}")
-            st.write(f"**Holiday periods:** {len(logs.get('holidays', []))}")
-
-        st.divider()
-
-        # Danger Zone
-        with st.expander("🚨 Danger Zone"):
-            st.warning("These actions cannot be undone!")
-
-            if st.button("🗑️ Clear All Workout Data", type="secondary"):
-                if st.session_state.get("confirm_clear"):
-                    logs = {"workouts": [], "exercises": {}, "skipped_sessions": []}
-                    save_logs(logs)
-                    st.success("All workout data cleared.")
-                    st.session_state.confirm_clear = False
-                    st.rerun()
-                else:
-                    st.session_state.confirm_clear = True
-                    st.warning("Click again to confirm deletion!")
+        # Stats
+        st.markdown("### 📊 Data Stats")
+        st.write(f"Exercises tracked: {len(logs.get('exercises', {}))}")
+        st.write(f"Total workouts: {len(logs.get('workouts', []))}")
+        st.write(f"Measurements: {len(logs.get('measurements', []))}")
 
     # Footer
     st.divider()
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        mode_indicator = "❄️" if settings.get("holiday_mode") else ""
-        st.caption(f"NeuroLegs v1.0 {mode_indicator} | {datetime.now().strftime('%H:%M')} | {USER_PROFILE['weight_kg']}kg")
-    with col2:
-        if st.button("🚪 Logout", type="secondary"):
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.caption(f"NeuroLegs v2.0 | {datetime.now().strftime('%H:%M')}")
+    with c2:
+        if st.button("🚪 Logout"):
             st.session_state.authenticated = False
             st.rerun()
 
