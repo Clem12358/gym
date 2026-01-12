@@ -59,8 +59,8 @@ EXERCISES = {
          "video": "https://www.youtube.com/watch?v=8nm863C0c60", "notes": "Feet shoulder-width, full ROM."},
         {"name": "Seated Leg Curl", "sets": 3, "rep_range": (12, 15), "rest": "90s", "rest_seconds": 90,
          "video": "https://www.youtube.com/watch?v=OrxowZ4l3yI", "notes": "Point toes, squeeze hamstrings."},
-        {"name": "Standing Calf Raise", "sets": 4, "rep_range": (8, 10), "rest": "60s", "rest_seconds": 60,
-         "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc", "notes": "Full stretch at bottom, pause at top."}
+        {"name": "Seated Calf Raise", "sets": 4, "rep_range": (15, 20), "rest": "60s", "rest_seconds": 60,
+         "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc", "notes": "Soleus focus. Deep stretch, hard squeeze."}
     ],
     "Legs B": [
         {"name": "Romanian Deadlift", "sets": 3, "rep_range": (8, 10), "rest": "3 min", "rest_seconds": 180,
@@ -107,9 +107,9 @@ MEAL_PLANS = {
 
 STARTING_WEIGHTS = {
     "High Bar Squat": 40, "Leg Extension": 20, "Leg Press": 60, "Seated Leg Curl": 15,
-    "Standing Calf Raise": 30, "Romanian Deadlift": 40, "Unilateral Leg Press": 30,
-    "Lying Leg Curl": 15, "Adductor Machine": 20, "Seated Calf Raise": 25,
-    "Hack Squat": 40, "Hip Thrust": 40, "Leg Extension (Drop Set)": 15, "Calf Press": 60
+    "Romanian Deadlift": 40, "Unilateral Leg Press": 30, "Lying Leg Curl": 15,
+    "Adductor Machine": 20, "Seated Calf Raise": 25, "Hack Squat": 40,
+    "Hip Thrust": 40, "Leg Extension (Drop Set)": 15, "Calf Press": 60
 }
 
 
