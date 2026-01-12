@@ -1,0 +1,12 @@
+# Secrets - DO NOT COMMIT
+.streamlit/secrets.toml
+*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.env
+
+# Local data files (no longer needed with Google Sheets)
+workout_logs.json
+user_settings.json

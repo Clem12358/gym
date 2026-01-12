@@ -18,14 +18,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from io import StringIO
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ============================================================================
 # CONFIGURATION & CONSTANTS
 # ============================================================================
 
 APP_TITLE = "🦵 NeuroLegs"
-DATA_FILE = "workout_logs.json"
-SETTINGS_FILE = "user_settings.json"
 APP_PASSWORD = "01012026"
 
 USER_PROFILE = {
@@ -114,31 +114,63 @@ STARTING_WEIGHTS = {
 
 
 # ============================================================================
-# DATA PERSISTENCE
+# DATA PERSISTENCE (Google Sheets)
 # ============================================================================
 
+@st.cache_resource
+def get_sheets_client():
+    """Get authenticated Google Sheets client using Streamlit secrets."""
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return gspread.authorize(creds)
+
+
 def load_logs() -> Dict:
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f:
-            return json.load(f)
+    """Load logs from Google Sheets."""
+    try:
+        client = get_sheets_client()
+        sheet = client.open_by_key(st.secrets["spreadsheet_id"]).worksheet("logs")
+        data = sheet.acell("A1").value
+        if data:
+            return json.loads(data)
+    except Exception as e:
+        st.error(f"Failed to load logs: {e}")
     return {"workouts": [], "exercises": {}, "skipped_sessions": [], "measurements": [], "schedule_offset": 0}
 
 
 def save_logs(data: Dict) -> None:
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=2, default=str)
+    """Save logs to Google Sheets."""
+    try:
+        client = get_sheets_client()
+        sheet = client.open_by_key(st.secrets["spreadsheet_id"]).worksheet("logs")
+        sheet.update_acell("A1", json.dumps(data, default=str))
+    except Exception as e:
+        st.error(f"Failed to save logs: {e}")
 
 
 def load_settings() -> Dict:
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, 'r') as f:
-            return json.load(f)
+    """Load settings from Google Sheets."""
+    try:
+        client = get_sheets_client()
+        sheet = client.open_by_key(st.secrets["spreadsheet_id"]).worksheet("settings")
+        data = sheet.acell("A1").value
+        if data:
+            return json.loads(data)
+    except Exception as e:
+        st.error(f"Failed to load settings: {e}")
     return {"meal_plan": "Option 1 - Clean/Rice", "holiday_mode": False, "holiday_start": None, "schedule_offset": 0}
 
 
 def save_settings(settings: Dict) -> None:
-    with open(SETTINGS_FILE, 'w') as f:
-        json.dump(settings, f, indent=2)
+    """Save settings to Google Sheets."""
+    try:
+        client = get_sheets_client()
+        sheet = client.open_by_key(st.secrets["spreadsheet_id"]).worksheet("settings")
+        sheet.update_acell("A1", json.dumps(settings, default=str))
+    except Exception as e:
+        st.error(f"Failed to save settings: {e}")
 
 
 # ============================================================================
