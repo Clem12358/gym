@@ -563,6 +563,35 @@ class AdaptiveCoach:
         history = self.exercise_history.get(exercise_name, [])
         return sorted(history, key=lambda x: x.get("date", ""), reverse=True)[:limit]
 
+    def get_days_since_last_session(self, exercise_name: str) -> Optional[int]:
+        """Returns days since last session for an exercise, or None if never trained."""
+        history = self.get_exercise_history(exercise_name, limit=1)
+        if not history:
+            return None
+        try:
+            last_date_str = history[0].get("date", "")
+            if not last_date_str:
+                return None
+            last_date = datetime.fromisoformat(last_date_str.replace("Z", "+00:00"))
+            if last_date.tzinfo:
+                last_date = last_date.replace(tzinfo=None)
+            return (datetime.now() - last_date).days
+        except (ValueError, TypeError):
+            return None
+
+    def get_return_deload_factor(self, days_gap: int) -> Tuple[float, str, str]:
+        """Returns (deload_multiplier, phase_name, message) based on time gap."""
+        if days_gap <= 14:
+            return (1.0, "NORMAL", "")
+        elif days_gap <= 28:
+            return (0.90, "LIGHT_RETURN", "Light return week - ease back in")
+        elif days_gap <= 56:
+            return (0.80, "REACCLIMATION", "Re-acclimation phase - rebuild the groove")
+        elif days_gap <= 90:
+            return (0.70, "REBUILDING", "Rebuilding phase - muscle memory will help!")
+        else:
+            return (0.60, "FRESH_START", "Fresh start - your muscles remember more than you think!")
+
     def analyze_multi_session_trend(self, exercise_name: str, num_sessions: int = 3) -> Dict:
         history = self.get_exercise_history(exercise_name, num_sessions + 2)
         if len(history) < 1:
@@ -661,10 +690,36 @@ class AdaptiveCoach:
                     "message": f"First time! Start with {starting_weight}kg for {min_range} reps.",
                     "confidence": 50, "is_new": True, "trend_info": None}
 
-        trend = self.analyze_multi_session_trend(exercise_name, 3)
+        # Check for return-from-break scenario
+        days_gap = self.get_days_since_last_session(exercise_name)
         last_session = history[0]
         last_weight = last_session.get("weight", 0)
         last_sets = last_session.get("sets", [])
+        last_reps = [s.get("reps", 0) for s in last_sets]
+        last_avg_rpe = sum([s.get("rpe", 8) for s in last_sets]) / len(last_sets) if last_sets else 8
+
+        if days_gap is not None and days_gap > 14:
+            deload_factor, phase, phase_msg = self.get_return_deload_factor(days_gap)
+            return_weight = round(last_weight * deload_factor / 2.5) * 2.5  # Round to nearest 2.5kg
+            deload_percent = int((1 - deload_factor) * 100)
+
+            return {
+                "weight": return_weight,
+                "reps_per_set": min_range,
+                "recommendation": phase,
+                "message": phase_msg,
+                "confidence": 85,
+                "is_new": False,
+                "trend_info": None,
+                "days_since_last": days_gap,
+                "last_weight": last_weight,
+                "last_reps": last_reps,
+                "last_rpe": round(last_avg_rpe, 1),
+                "deload_percent": deload_percent,
+                "previous": f"Last ({days_gap} days ago): {last_weight}kg × {last_reps}"
+            }
+
+        trend = self.analyze_multi_session_trend(exercise_name, 3)
 
         if len(history) == 1:
             return {"weight": last_weight, "reps_per_set": min_range + 1, "recommendation": "BUILD",
@@ -794,8 +849,12 @@ def create_exercise_link(name: str, url: str) -> str:
 
 
 def format_recommendation_badge(recommendation: str) -> str:
-    colors = {"PROGRESS": "🟢", "PUSH": "🔵", "BUILD": "🟡", "CONSOLIDATE": "🟠", "DELOAD": "🔴", "BASELINE": "⚪"}
-    return f"{colors.get(recommendation, '⚪')} {recommendation}"
+    colors = {
+        "PROGRESS": "🟢", "PUSH": "🔵", "BUILD": "🟡", "CONSOLIDATE": "🟠",
+        "DELOAD": "🔴", "BASELINE": "⚪", "NORMAL": "🟢",
+        "LIGHT_RETURN": "🔵", "REACCLIMATION": "🟡", "REBUILDING": "🟠", "FRESH_START": "🔴"
+    }
+    return f"{colors.get(recommendation, '⚪')} {recommendation.replace('_', ' ')}"
 
 
 def format_trend_badge(trend: str) -> str:
@@ -861,8 +920,8 @@ def main():
     st.divider()
 
     # Navigation
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "🏋️ Today", "📝 Log", "📊 Progress", "📈 Analytics", "🔢 Tools", "🍽️ Nutrition", "⚙️ Settings"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        "🏋️ Today", "📝 Log", "📊 Progress", "📈 Analytics", "🔢 Tools", "🍽️ Nutrition", "⚙️ Settings", "📚 Library"
     ])
 
     # ========== TAB 1: TODAY ==========
@@ -961,6 +1020,16 @@ def main():
             with c1: st.metric("Target Weight", f"{target['weight']}kg")
             with c2: st.metric("Target Reps", f"{target['reps_per_set']}")
             with c3: st.metric("Status", target["recommendation"])
+
+            # Return-from-break warning
+            if target.get("days_since_last") and target["days_since_last"] > 14:
+                days = target["days_since_last"]
+                st.warning(f"**Welcome back!** You haven't trained {selected_exercise_name} in **{days} days**")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.info(f"**Last session:** {target['last_weight']}kg × {target['last_reps']} @ RPE {target['last_rpe']}")
+                with col2:
+                    st.success(f"**Recommended:** {target['weight']}kg ({target['deload_percent']}% deload)")
 
             st.info(target["message"])
 
@@ -1256,6 +1325,110 @@ def main():
         st.write(f"Exercises tracked: {len(logs.get('exercises', {}))}")
         st.write(f"Total workouts: {len(logs.get('workouts', []))}")
         st.write(f"Measurements: {len(logs.get('measurements', []))}")
+
+    # ========== TAB 8: EXERCISE LIBRARY ==========
+    with tab8:
+        st.markdown("## 📚 Exercise Library")
+        st.caption("All exercises you've ever trained, including inactive ones")
+
+        all_exercises = logs.get("exercises", {})
+
+        if not all_exercises:
+            st.info("No exercise history yet. Start logging workouts to build your library!")
+        else:
+            # Summary stats
+            active_count = 0
+            inactive_count = 0
+            for ex_name in all_exercises:
+                days = coach.get_days_since_last_session(ex_name)
+                if days is not None and days <= 14:
+                    active_count += 1
+                else:
+                    inactive_count += 1
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("Total Exercises", len(all_exercises))
+            with c2:
+                st.metric("Active (< 14 days)", active_count)
+            with c3:
+                st.metric("Inactive", inactive_count)
+
+            st.divider()
+
+            # Filter options
+            filter_option = st.radio("Show", ["All", "Active Only", "Inactive Only"], horizontal=True)
+
+            # Sort exercises by last trained date
+            exercise_list = []
+            for ex_name, history in all_exercises.items():
+                if not history:
+                    continue
+                days_gap = coach.get_days_since_last_session(ex_name)
+                if days_gap is None:
+                    days_gap = 9999
+
+                # Apply filter
+                if filter_option == "Active Only" and days_gap > 14:
+                    continue
+                if filter_option == "Inactive Only" and days_gap <= 14:
+                    continue
+
+                best_weight = max(h.get("weight", 0) for h in history)
+                last_session = history[0] if history else {}
+                exercise_list.append({
+                    "name": ex_name,
+                    "days_gap": days_gap,
+                    "sessions": len(history),
+                    "best_weight": best_weight,
+                    "last_weight": last_session.get("weight", 0),
+                    "last_session": last_session
+                })
+
+            # Sort by days since last (most recent first)
+            exercise_list.sort(key=lambda x: x["days_gap"])
+
+            for ex in exercise_list:
+                days = ex["days_gap"]
+                if days <= 14:
+                    status_icon = "🟢"
+                    status_text = f"Active ({days}d ago)"
+                elif days <= 28:
+                    status_icon = "🟡"
+                    status_text = f"Recent ({days}d ago)"
+                elif days <= 56:
+                    status_icon = "🟠"
+                    status_text = f"Inactive ({days}d)"
+                elif days < 9999:
+                    status_icon = "🔴"
+                    status_text = f"Long break ({days}d)"
+                else:
+                    status_icon = "⚪"
+                    status_text = "Unknown"
+
+                with st.expander(f"{status_icon} **{ex['name']}** - {status_text}"):
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.metric("Last Weight", f"{ex['last_weight']}kg")
+                    with c2:
+                        st.metric("PR Weight", f"{ex['best_weight']}kg")
+                    with c3:
+                        st.metric("Total Sessions", ex["sessions"])
+
+                    # Show return recommendation if inactive
+                    if days > 14:
+                        deload_factor, phase, msg = coach.get_return_deload_factor(days)
+                        return_weight = round(ex["last_weight"] * deload_factor / 2.5) * 2.5
+                        deload_pct = int((1 - deload_factor) * 100)
+                        st.info(f"**Return recommendation:** Start at **{return_weight}kg** ({deload_pct}% deload) - {msg}")
+
+                    # Last session details
+                    if ex["last_session"]:
+                        sets = ex["last_session"].get("sets", [])
+                        if sets:
+                            reps = [s.get("reps", 0) for s in sets]
+                            rpe = [s.get("rpe", 8) for s in sets]
+                            st.caption(f"Last: {ex['last_weight']}kg × {reps} @ RPE {[round(r, 1) for r in rpe]}")
 
     # Footer
     st.divider()
