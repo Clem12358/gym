@@ -1141,12 +1141,14 @@ class AdaptiveCoach:
             recommendation: str,
             message: str,
             backoff_percent: float = BACKOFF_PERCENT,
+            round_weight: bool = True,
             **kwargs
         ) -> Dict:
-            backoff_weight = round_to_increment(weight * backoff_percent)
+            base_weight = weight if not round_weight else round_to_increment(weight)
+            backoff_weight = round_to_increment(base_weight * backoff_percent)
             backoff_reps = min(max_range, max(reps, min_range) + 2)
             target = {
-                "weight": round_to_increment(weight),
+                "weight": base_weight,
                 "reps_per_set": reps,
                 "recommendation": recommendation,
                 "message": message,
@@ -1207,6 +1209,7 @@ class AdaptiveCoach:
                 "BUILD",
                 f"Second session! Use {last_weight}kg again, aim for {min_range + 1} reps.",
                 backoff_percent=backoff_percent,
+                round_weight=False,
                 confidence=60,
                 is_new=False,
                 trend_info=trend,
@@ -1268,6 +1271,7 @@ class AdaptiveCoach:
                 "PUSH",
                 f"Hit {max_range} on all sets to unlock +{increment}kg.",
                 backoff_percent=backoff_percent,
+                round_weight=False,
                 confidence=80,
                 previous=f"Last: {last_weight}kg × {last_reps}",
                 is_new=False,
@@ -1283,6 +1287,7 @@ class AdaptiveCoach:
                 "VOLUME",
                 "Stalled but fresh. Add one back-off set for extra volume.",
                 backoff_percent=backoff_percent,
+                round_weight=False,
                 confidence=80,
                 previous=f"Last: {last_weight}kg × {last_reps}",
                 is_new=False,
@@ -1300,6 +1305,7 @@ class AdaptiveCoach:
                 "BUILD",
                 f"Target: {last_weight}kg × {target_reps} reps.",
                 backoff_percent=backoff_percent,
+                round_weight=False,
                 confidence=75,
                 previous=f"Last: {last_weight}kg × {last_reps}",
                 is_new=False,
@@ -1313,6 +1319,7 @@ class AdaptiveCoach:
             "CONSOLIDATE",
             f"Same weight ({last_weight}kg), focus on clean {min_range} reps.",
             backoff_percent=backoff_percent,
+            round_weight=False,
             confidence=70,
             previous=f"Last: {last_weight}kg @ avg RPE {last_stats['avg_rpe']:.1f}",
             is_new=False,
