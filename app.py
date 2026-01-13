@@ -20,6 +20,7 @@ from plotly.subplots import make_subplots
 from io import StringIO
 import gspread
 from google.oauth2.service_account import Credentials
+from gspread.exceptions import WorksheetNotFound
 
 # ============================================================================
 # CONFIGURATION & CONSTANTS
@@ -112,6 +113,15 @@ STARTING_WEIGHTS = {
     "Hip Thrust": 40, "Leg Extension (Drop Set)": 15, "Calf Press": 60
 }
 
+WORKOUT_LOG_SHEET = "workout_logs"
+SKIPPED_SESSIONS_SHEET = "skipped_sessions"
+MEASUREMENTS_SHEET = "measurements"
+LEGACY_LOGS_SHEET = "logs"
+
+WORKOUT_LOG_HEADERS = ["date", "workout", "exercise", "weight", "sets_json", "notes"]
+SKIPPED_SESSION_HEADERS = ["date", "workout", "action"]
+MEASUREMENT_HEADERS = ["date", "body_weight", "left_thigh", "right_thigh", "left_calf", "right_calf", "notes"]
+
 
 # ============================================================================
 # DATA PERSISTENCE (Google Sheets)
@@ -126,36 +136,252 @@ def get_sheets_client():
     )
     return gspread.authorize(creds)
 
+@st.cache_resource
+def get_spreadsheet():
+    client = get_sheets_client()
+    return client.open_by_key(st.secrets["spreadsheet_id"])
+
+
+def get_or_create_worksheet(spreadsheet, title: str, rows: int = 1000, cols: int = 20):
+    try:
+        return spreadsheet.worksheet(title)
+    except WorksheetNotFound:
+        return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
+
+
+def ensure_headers(worksheet, headers: List[str], cache_key: str) -> None:
+    initialized = st.session_state.setdefault("sheets_initialized", set())
+    if cache_key in initialized:
+        return
+    existing = worksheet.row_values(1)
+    if existing != headers:
+        if existing:
+            worksheet.insert_row(headers, 1)
+        else:
+            worksheet.update("A1", [headers])
+    initialized.add(cache_key)
+
+
+def append_rows_safe(worksheet, rows: List[List]) -> None:
+    if not rows:
+        return
+    try:
+        worksheet.append_rows(rows, value_input_option="RAW")
+    except AttributeError:
+        for row in rows:
+            worksheet.append_row(row, value_input_option="RAW")
+
+
+def safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def serialize_sets(sets_data: List[Dict]) -> str:
+    return json.dumps(sets_data, separators=(",", ":"))
+
+
+def normalize_logs(logs: Dict) -> Dict:
+    logs.setdefault("workouts", [])
+    logs.setdefault("exercises", {})
+    logs.setdefault("skipped_sessions", [])
+    logs.setdefault("measurements", [])
+    logs.setdefault("schedule_offset", 0)
+
+    for history in logs["exercises"].values():
+        history.sort(key=lambda x: x.get("date", ""), reverse=True)
+    logs["measurements"].sort(key=lambda x: x.get("date", ""))
+    return logs
+
+
+def load_legacy_logs(spreadsheet) -> Optional[Dict]:
+    try:
+        legacy_sheet = spreadsheet.worksheet(LEGACY_LOGS_SHEET)
+    except WorksheetNotFound:
+        return None
+    data = legacy_sheet.acell("A1").value
+    if not data:
+        return None
+    try:
+        legacy_logs = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(legacy_logs, dict):
+        return None
+    return legacy_logs
+
+
+def migrate_legacy_logs(
+    legacy_logs: Dict,
+    workout_ws,
+    skipped_ws,
+    measurements_ws
+) -> None:
+    workout_rows = []
+    for exercise_name, history in legacy_logs.get("exercises", {}).items():
+        for entry in reversed(history):
+            workout_rows.append([
+                entry.get("date", ""),
+                entry.get("workout", ""),
+                exercise_name,
+                entry.get("weight", 0),
+                serialize_sets(entry.get("sets", [])),
+                entry.get("notes", "")
+            ])
+    append_rows_safe(workout_ws, workout_rows)
+
+    skipped_rows = [
+        [entry.get("date", ""), entry.get("workout", ""), entry.get("action", "")]
+        for entry in legacy_logs.get("skipped_sessions", [])
+    ]
+    append_rows_safe(skipped_ws, skipped_rows)
+
+    measurement_rows = []
+    for entry in legacy_logs.get("measurements", []):
+        measurement_rows.append([
+            entry.get("date", ""),
+            entry.get("body_weight", 0),
+            entry.get("left_thigh", 0),
+            entry.get("right_thigh", 0),
+            entry.get("left_calf", 0),
+            entry.get("right_calf", 0),
+            entry.get("notes", "")
+        ])
+    append_rows_safe(measurements_ws, measurement_rows)
+
+
+def build_logs_from_rows(
+    workout_rows: List[Dict],
+    skipped_rows: List[Dict],
+    measurement_rows: List[Dict]
+) -> Dict:
+    logs = {"workouts": [], "exercises": {}, "skipped_sessions": [], "measurements": [], "schedule_offset": 0}
+
+    for row in workout_rows:
+        exercise_name = row.get("exercise", "")
+        if not exercise_name:
+            continue
+        sets_raw = row.get("sets_json", "")
+        try:
+            sets_data = json.loads(sets_raw) if sets_raw else []
+        except json.JSONDecodeError:
+            sets_data = []
+
+        entry = {
+            "date": row.get("date", ""),
+            "workout": row.get("workout", ""),
+            "weight": safe_float(row.get("weight", 0)),
+            "sets": sets_data,
+            "notes": row.get("notes", "")
+        }
+        logs["exercises"].setdefault(exercise_name, []).append(entry)
+        logs["workouts"].append({
+            "date": entry["date"],
+            "workout_type": entry["workout"],
+            "exercise": exercise_name,
+            "data": entry
+        })
+
+    logs["skipped_sessions"] = [
+        {
+            "date": row.get("date", ""),
+            "workout": row.get("workout", ""),
+            "action": row.get("action", "")
+        }
+        for row in skipped_rows
+    ]
+
+    logs["measurements"] = []
+    for row in measurement_rows:
+        logs["measurements"].append({
+            "date": row.get("date", ""),
+            "body_weight": safe_float(row.get("body_weight", 0)),
+            "left_thigh": safe_float(row.get("left_thigh", 0)),
+            "right_thigh": safe_float(row.get("right_thigh", 0)),
+            "left_calf": safe_float(row.get("left_calf", 0)),
+            "right_calf": safe_float(row.get("right_calf", 0)),
+            "notes": row.get("notes", "")
+        })
+
+    return normalize_logs(logs)
+
 
 def load_logs() -> Dict:
     """Load logs from Google Sheets."""
     try:
-        client = get_sheets_client()
-        sheet = client.open_by_key(st.secrets["spreadsheet_id"]).worksheet("logs")
-        data = sheet.acell("A1").value
-        if data:
-            return json.loads(data)
+        spreadsheet = get_spreadsheet()
+        workout_ws = get_or_create_worksheet(
+            spreadsheet, WORKOUT_LOG_SHEET, rows=1000, cols=len(WORKOUT_LOG_HEADERS)
+        )
+        skipped_ws = get_or_create_worksheet(
+            spreadsheet, SKIPPED_SESSIONS_SHEET, rows=200, cols=len(SKIPPED_SESSION_HEADERS)
+        )
+        measurements_ws = get_or_create_worksheet(
+            spreadsheet, MEASUREMENTS_SHEET, rows=500, cols=len(MEASUREMENT_HEADERS)
+        )
+
+        ensure_headers(workout_ws, WORKOUT_LOG_HEADERS, WORKOUT_LOG_SHEET)
+        ensure_headers(skipped_ws, SKIPPED_SESSION_HEADERS, SKIPPED_SESSIONS_SHEET)
+        ensure_headers(measurements_ws, MEASUREMENT_HEADERS, MEASUREMENTS_SHEET)
+
+        workout_rows = workout_ws.get_all_records()
+        if not workout_rows:
+            legacy_logs = load_legacy_logs(spreadsheet)
+            if legacy_logs:
+                migrate_legacy_logs(legacy_logs, workout_ws, skipped_ws, measurements_ws)
+                return normalize_logs(legacy_logs)
+
+        skipped_rows = skipped_ws.get_all_records()
+        measurement_rows = measurements_ws.get_all_records()
+        return build_logs_from_rows(workout_rows, skipped_rows, measurement_rows)
     except Exception as e:
         st.error(f"Failed to load logs: {e}")
     return {"workouts": [], "exercises": {}, "skipped_sessions": [], "measurements": [], "schedule_offset": 0}
 
 
-def save_logs(data: Dict) -> None:
-    """Save logs to Google Sheets."""
+def append_workout_logs(rows: List[List]) -> None:
     try:
-        client = get_sheets_client()
-        sheet = client.open_by_key(st.secrets["spreadsheet_id"]).worksheet("logs")
-        sheet.update_acell("A1", json.dumps(data, default=str))
+        spreadsheet = get_spreadsheet()
+        workout_ws = get_or_create_worksheet(
+            spreadsheet, WORKOUT_LOG_SHEET, rows=1000, cols=len(WORKOUT_LOG_HEADERS)
+        )
+        ensure_headers(workout_ws, WORKOUT_LOG_HEADERS, WORKOUT_LOG_SHEET)
+        append_rows_safe(workout_ws, rows)
     except Exception as e:
-        st.error(f"Failed to save logs: {e}")
-    st.session_state["logs"] = data
+        st.error(f"Failed to save workout logs: {e}")
+
+
+def append_skipped_sessions(rows: List[List]) -> None:
+    try:
+        spreadsheet = get_spreadsheet()
+        skipped_ws = get_or_create_worksheet(
+            spreadsheet, SKIPPED_SESSIONS_SHEET, rows=200, cols=len(SKIPPED_SESSION_HEADERS)
+        )
+        ensure_headers(skipped_ws, SKIPPED_SESSION_HEADERS, SKIPPED_SESSIONS_SHEET)
+        append_rows_safe(skipped_ws, rows)
+    except Exception as e:
+        st.error(f"Failed to save skipped sessions: {e}")
+
+
+def append_measurements(rows: List[List]) -> None:
+    try:
+        spreadsheet = get_spreadsheet()
+        measurements_ws = get_or_create_worksheet(
+            spreadsheet, MEASUREMENTS_SHEET, rows=500, cols=len(MEASUREMENT_HEADERS)
+        )
+        ensure_headers(measurements_ws, MEASUREMENT_HEADERS, MEASUREMENTS_SHEET)
+        append_rows_safe(measurements_ws, rows)
+    except Exception as e:
+        st.error(f"Failed to save measurements: {e}")
 
 
 def load_settings() -> Dict:
     """Load settings from Google Sheets."""
     try:
-        client = get_sheets_client()
-        sheet = client.open_by_key(st.secrets["spreadsheet_id"]).worksheet("settings")
+        spreadsheet = get_spreadsheet()
+        sheet = spreadsheet.worksheet("settings")
         data = sheet.acell("A1").value
         if data:
             return json.loads(data)
@@ -167,8 +393,8 @@ def load_settings() -> Dict:
 def save_settings(settings: Dict) -> None:
     """Save settings to Google Sheets."""
     try:
-        client = get_sheets_client()
-        sheet = client.open_by_key(st.secrets["spreadsheet_id"]).worksheet("settings")
+        spreadsheet = get_spreadsheet()
+        sheet = spreadsheet.worksheet("settings")
         sheet.update_acell("A1", json.dumps(settings, default=str))
     except Exception as e:
         st.error(f"Failed to save settings: {e}")
@@ -218,15 +444,16 @@ def export_measurements_to_csv(logs: Dict) -> str:
     return df.to_csv(index=False)
 
 
-def import_csv_to_logs(csv_content: str, logs: Dict) -> Tuple[Dict, int]:
-    """Import workout data from CSV. Returns updated logs and count of imported entries."""
+def import_csv_to_logs(csv_content: str, logs: Dict) -> Tuple[Dict, int, List[List]]:
+    """Import workout data from CSV. Returns updated logs, count, and sheet rows."""
     try:
         df = pd.read_csv(StringIO(csv_content))
         required_cols = ["Date", "Exercise", "Weight_kg", "Reps"]
         if not all(col in df.columns for col in required_cols):
-            return logs, -1
+            return logs, -1, []
 
         imported = 0
+        imported_rows = []
         grouped = df.groupby(["Date", "Exercise"])
 
         for (date, exercise), group in grouped:
@@ -249,11 +476,25 @@ def import_csv_to_logs(csv_content: str, logs: Dict) -> Tuple[Dict, int]:
                 logs["exercises"][exercise] = []
 
             logs["exercises"][exercise].append(entry)
+            logs["workouts"].append({
+                "date": entry["date"],
+                "workout_type": entry["workout"],
+                "exercise": exercise,
+                "data": entry
+            })
+            imported_rows.append([
+                entry["date"],
+                entry["workout"],
+                exercise,
+                entry["weight"],
+                serialize_sets(entry["sets"]),
+                entry["notes"]
+            ])
             imported += 1
 
-        return logs, imported
+        return normalize_logs(logs), imported, imported_rows
     except Exception as e:
-        return logs, -1
+        return logs, -1, []
 
 
 # ============================================================================
@@ -967,16 +1208,18 @@ def main():
                     with c1:
                         if st.button("🔄 Push +1 Day", use_container_width=True):
                             if "skipped_sessions" not in logs: logs["skipped_sessions"] = []
-                            logs["skipped_sessions"].append({"date": datetime.now().isoformat(), "workout": workout_name, "action": "push"})
+                            skip_entry = {"date": datetime.now().isoformat(), "workout": workout_name, "action": "push"}
+                            logs["skipped_sessions"].append(skip_entry)
+                            append_skipped_sessions([[skip_entry["date"], skip_entry["workout"], skip_entry["action"]]])
                             settings["schedule_offset"] = settings.get("schedule_offset", 0) + 1
                             save_settings(settings)
-                            save_logs(logs)
                             st.rerun()
                     with c2:
                         if st.button("⏩ Skip Only", use_container_width=True):
                             if "skipped_sessions" not in logs: logs["skipped_sessions"] = []
-                            logs["skipped_sessions"].append({"date": datetime.now().isoformat(), "workout": workout_name, "action": "skip"})
-                            save_logs(logs)
+                            skip_entry = {"date": datetime.now().isoformat(), "workout": workout_name, "action": "skip"}
+                            logs["skipped_sessions"].append(skip_entry)
+                            append_skipped_sessions([[skip_entry["date"], skip_entry["workout"], skip_entry["action"]]])
                             st.success("Skipped!")
 
                 st.divider()
@@ -1123,6 +1366,7 @@ def main():
                 session_time = datetime.now().isoformat()
                 pr_hits = []
                 score_lines = []
+                workout_rows = []
 
                 for entry in session_data:
                     exercise = entry["exercise"]
@@ -1150,6 +1394,14 @@ def main():
                         "exercise": exercise_name,
                         "data": log_entry
                     })
+                    workout_rows.append([
+                        session_time,
+                        selected_workout,
+                        exercise_name,
+                        weight,
+                        serialize_sets(sets_data),
+                        notes
+                    ])
 
                     min_r, max_r = exercise["rep_range"]
                     score, consistency = coach.calculate_session_score(sets_data, min_r, max_r)
@@ -1158,7 +1410,7 @@ def main():
                     if is_pr and weight > old_pr:
                         pr_hits.append(f"{exercise_name}: {weight}kg (+{weight-old_pr}kg)")
 
-                save_logs(logs)
+                append_workout_logs(workout_rows)
 
                 if pr_hits:
                     pr_details = "<br>".join(pr_hits)
@@ -1294,7 +1546,7 @@ def main():
                 if st.form_submit_button("Save Measurements", type="primary"):
                     if "measurements" not in logs:
                         logs["measurements"] = []
-                    logs["measurements"].append({
+                    measurement_entry = {
                         "date": datetime.now().isoformat()[:10],
                         "body_weight": body_weight,
                         "left_thigh": left_thigh,
@@ -1302,8 +1554,17 @@ def main():
                         "left_calf": left_calf,
                         "right_calf": right_calf,
                         "notes": measure_notes
-                    })
-                    save_logs(logs)
+                    }
+                    logs["measurements"].append(measurement_entry)
+                    append_measurements([[
+                        measurement_entry["date"],
+                        measurement_entry["body_weight"],
+                        measurement_entry["left_thigh"],
+                        measurement_entry["right_thigh"],
+                        measurement_entry["left_calf"],
+                        measurement_entry["right_calf"],
+                        measurement_entry["notes"]
+                    ]])
                     st.success("Measurements saved!")
 
             # Show history
@@ -1381,9 +1642,9 @@ def main():
         if uploaded_file:
             if st.button("Import Data"):
                 content = uploaded_file.getvalue().decode("utf-8")
-                logs, count = import_csv_to_logs(content, logs)
+                logs, count, imported_rows = import_csv_to_logs(content, logs)
                 if count > 0:
-                    save_logs(logs)
+                    append_workout_logs(imported_rows)
                     st.success(f"Imported {count} workout entries!")
                 else:
                     st.error("Import failed. Check CSV format.")
