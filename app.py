@@ -45,6 +45,8 @@ BASE_SCHEDULE = {
 
 WEIGHT_INCREMENT = {"compound": 2.5, "isolation": 1.25}
 BACKOFF_PERCENT = 0.90
+BACKOFF_MIN_PERCENT = 0.80
+BACKOFF_MAX_PERCENT = 0.95
 TARGET_RPE = 8.0
 MAX_RPE = 9.0
 DELOAD_RPE = 9.5
@@ -928,6 +930,13 @@ class AdaptiveCoach:
             return {
                 "sets": [],
                 "top_weight": safe_float(session.get("weight", 0)),
+                "top_set_reps": 0,
+                "top_set_rpe": TARGET_RPE,
+                "backoff_sets": 0,
+                "backoff_avg_reps": 0,
+                "backoff_min_reps": 0,
+                "backoff_avg_rpe": TARGET_RPE,
+                "backoff_rep_dropoff": 0,
                 "avg_reps": 0,
                 "min_reps": 0,
                 "max_reps": 0,
@@ -943,13 +952,38 @@ class AdaptiveCoach:
         reps = [s.get("reps", 0) for s in sets]
         rpes = [s.get("rpe", TARGET_RPE) for s in sets]
 
+        top_weight = max(weights) if weights else 0
+        top_sets = [s for s in sets if s.get("weight", 0) >= top_weight * 0.99]
+        top_set = max(top_sets, key=lambda s: s.get("reps", 0)) if top_sets else sets[0]
+
+        backoff_sets = [s for s in sets if s.get("weight", 0) < top_weight * 0.99]
+        if backoff_sets:
+            backoff_reps = [s.get("reps", 0) for s in backoff_sets]
+            backoff_rpes = [s.get("rpe", TARGET_RPE) for s in backoff_sets]
+            backoff_avg_reps = sum(backoff_reps) / len(backoff_reps)
+            backoff_min_reps = min(backoff_reps)
+            backoff_avg_rpe = sum(backoff_rpes) / len(backoff_rpes)
+            backoff_rep_dropoff = max(backoff_reps) - min(backoff_reps)
+        else:
+            backoff_avg_reps = 0
+            backoff_min_reps = 0
+            backoff_avg_rpe = TARGET_RPE
+            backoff_rep_dropoff = 0
+
         volume = sum(w * r for w, r in zip(weights, reps))
         e1rms = [estimate_e1rm(w, r, rpe) for w, r, rpe in zip(weights, reps, rpes)]
 
         in_range_sets = sum(1 for r in reps if min_range <= r <= max_range)
         return {
             "sets": sets,
-            "top_weight": max(weights) if weights else 0,
+            "top_weight": top_weight,
+            "top_set_reps": top_set.get("reps", 0),
+            "top_set_rpe": top_set.get("rpe", TARGET_RPE),
+            "backoff_sets": len(backoff_sets),
+            "backoff_avg_reps": backoff_avg_reps,
+            "backoff_min_reps": backoff_min_reps,
+            "backoff_avg_rpe": backoff_avg_rpe,
+            "backoff_rep_dropoff": backoff_rep_dropoff,
             "avg_reps": sum(reps) / len(reps),
             "min_reps": min(reps),
             "max_reps": max(reps),
@@ -959,6 +993,31 @@ class AdaptiveCoach:
             "best_e1rm": max(e1rms) if e1rms else 0,
             "all_sets_in_range": in_range_sets == len(reps)
         }
+
+    def get_backoff_adjustment(self, session_stats: Dict, rep_range: Tuple[int, int]) -> Tuple[float, Optional[str]]:
+        if session_stats.get("backoff_sets", 0) == 0:
+            return BACKOFF_PERCENT, None
+
+        min_range, max_range = rep_range
+        top_success = session_stats["top_set_reps"] >= min_range and session_stats["top_set_rpe"] <= MAX_RPE
+        backoff_avg_reps = session_stats["backoff_avg_reps"]
+        backoff_min_reps = session_stats["backoff_min_reps"]
+        backoff_avg_rpe = session_stats["backoff_avg_rpe"]
+        backoff_dropoff = session_stats["backoff_rep_dropoff"]
+
+        if top_success and (backoff_min_reps < min_range or backoff_avg_rpe > MAX_RPE or backoff_dropoff >= 3):
+            new_percent = max(BACKOFF_MIN_PERCENT, BACKOFF_PERCENT - 0.05)
+            return new_percent, f"Back-off auto-adjusted to {int(new_percent * 100)}% for quality reps."
+
+        if backoff_avg_reps < min_range:
+            new_percent = max(BACKOFF_MIN_PERCENT, BACKOFF_PERCENT - 0.03)
+            return new_percent, f"Back-off reduced to {int(new_percent * 100)}% to stay in range."
+
+        if backoff_avg_reps >= max_range and backoff_avg_rpe <= TARGET_RPE - 0.5:
+            new_percent = min(BACKOFF_MAX_PERCENT, BACKOFF_PERCENT + 0.02)
+            return new_percent, f"Back-off nudged up to {int(new_percent * 100)}% for more overload."
+
+        return BACKOFF_PERCENT, None
 
     def get_exercise_history(self, exercise_name: str, limit: int = 10) -> List[Dict]:
         history = self.exercise_history.get(exercise_name, [])
@@ -1076,8 +1135,15 @@ class AdaptiveCoach:
                 return value
             return round(value / increment) * increment
 
-        def build_target(weight: float, reps: int, recommendation: str, message: str, **kwargs) -> Dict:
-            backoff_weight = round_to_increment(weight * BACKOFF_PERCENT)
+        def build_target(
+            weight: float,
+            reps: int,
+            recommendation: str,
+            message: str,
+            backoff_percent: float = BACKOFF_PERCENT,
+            **kwargs
+        ) -> Dict:
+            backoff_weight = round_to_increment(weight * backoff_percent)
             backoff_reps = min(max_range, max(reps, min_range) + 2)
             target = {
                 "weight": round_to_increment(weight),
@@ -1085,7 +1151,8 @@ class AdaptiveCoach:
                 "recommendation": recommendation,
                 "message": message,
                 "backoff_weight": backoff_weight,
-                "backoff_reps": backoff_reps
+                "backoff_reps": backoff_reps,
+                "backoff_percent": backoff_percent
             }
             target.update(kwargs)
             return target
@@ -1130,6 +1197,7 @@ class AdaptiveCoach:
                 previous=f"Last ({days_gap} days ago): {last_weight}kg × {last_reps}"
             )
 
+        backoff_percent, backoff_note = self.get_backoff_adjustment(last_stats, (min_range, max_range))
         trend = self.analyze_multi_session_trend(exercise_name, (min_range, max_range), 3)
 
         if len(history) == 1:
@@ -1138,9 +1206,11 @@ class AdaptiveCoach:
                 min_range + 1,
                 "BUILD",
                 f"Second session! Use {last_weight}kg again, aim for {min_range + 1} reps.",
+                backoff_percent=backoff_percent,
                 confidence=60,
                 is_new=False,
                 trend_info=trend,
+                backoff_note=backoff_note,
                 previous=f"Last: {last_weight}kg × {last_reps}"
             )
 
@@ -1153,9 +1223,11 @@ class AdaptiveCoach:
                 min_range,
                 "DELOAD",
                 f"Fatigue spike detected. Reset to {deload_weight}kg and rebuild.",
+                backoff_percent=backoff_percent,
                 confidence=90,
                 is_new=False,
                 trend_info=trend,
+                backoff_note=backoff_note,
                 plateau_info=plateau_msg if is_plateaued else None
             )
 
@@ -1166,9 +1238,11 @@ class AdaptiveCoach:
                 min_range,
                 "DELOAD",
                 f"Plateau detected. Strategic deload to {deload_weight}kg.",
+                backoff_percent=backoff_percent,
                 confidence=90,
                 is_new=False,
                 trend_info=trend,
+                backoff_note=backoff_note,
                 plateau_info=plateau_msg
             )
 
@@ -1179,10 +1253,12 @@ class AdaptiveCoach:
                 min_range,
                 "PROGRESS",
                 f"Add weight! {new_weight}kg × {min_range} reps.",
+                backoff_percent=backoff_percent,
                 confidence=90,
                 previous=f"Last 3 avg e1RM: {trend.get('avg_e1rm', 0)}kg",
                 is_new=False,
-                trend_info=trend
+                trend_info=trend,
+                backoff_note=backoff_note
             )
 
         if last_stats["avg_reps"] >= max_range - 0.5 and last_stats["avg_rpe"] <= MAX_RPE:
@@ -1191,10 +1267,12 @@ class AdaptiveCoach:
                 max_range,
                 "PUSH",
                 f"Hit {max_range} on all sets to unlock +{increment}kg.",
+                backoff_percent=backoff_percent,
                 confidence=80,
                 previous=f"Last: {last_weight}kg × {last_reps}",
                 is_new=False,
-                trend_info=trend
+                trend_info=trend,
+                backoff_note=backoff_note
             )
 
         if is_plateaued and last_stats["avg_rpe"] <= (MAX_RPE - 0.5):
@@ -1204,10 +1282,12 @@ class AdaptiveCoach:
                 target_reps,
                 "VOLUME",
                 "Stalled but fresh. Add one back-off set for extra volume.",
+                backoff_percent=backoff_percent,
                 confidence=80,
                 previous=f"Last: {last_weight}kg × {last_reps}",
                 is_new=False,
                 trend_info=trend,
+                backoff_note=backoff_note,
                 plateau_info=plateau_msg,
                 suggested_extra_sets=1
             )
@@ -1219,10 +1299,12 @@ class AdaptiveCoach:
                 target_reps,
                 "BUILD",
                 f"Target: {last_weight}kg × {target_reps} reps.",
+                backoff_percent=backoff_percent,
                 confidence=75,
                 previous=f"Last: {last_weight}kg × {last_reps}",
                 is_new=False,
-                trend_info=trend
+                trend_info=trend,
+                backoff_note=backoff_note
             )
 
         return build_target(
@@ -1230,10 +1312,12 @@ class AdaptiveCoach:
             min_range,
             "CONSOLIDATE",
             f"Same weight ({last_weight}kg), focus on clean {min_range} reps.",
+            backoff_percent=backoff_percent,
             confidence=70,
             previous=f"Last: {last_weight}kg @ avg RPE {last_stats['avg_rpe']:.1f}",
             is_new=False,
             trend_info=trend,
+            backoff_note=backoff_note,
             plateau_info=plateau_msg if is_plateaued else None
         )
 
@@ -1400,7 +1484,7 @@ def main():
 
     # Navigation
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "🏋️ Today", "📝 Log", "📊 Progress", "📈 Analytics", "🔢 Tools", "🍽️ Nutrition", "⚙️ Settings", "📚 Library"
+        "🏋️ Today", "📝 Log", "📊 Progress", "📈 Analytics", "🔢 Tools", "📘 Progression", "⚙️ Settings", "📚 Library"
     ])
 
     # ========== TAB 1: TODAY ==========
@@ -1463,9 +1547,14 @@ def main():
                     with c1:
                         st.markdown(f"**Top: {target['weight']}kg × {target['reps_per_set']}**")
                         if ex["sets"] > 1:
-                            st.caption(f"Back-off: {target['backoff_weight']}kg × {target['backoff_reps']} × {ex['sets'] - 1} sets")
+                            st.caption(
+                                f"Back-off: {target['backoff_weight']}kg × {target['backoff_reps']} × {ex['sets'] - 1} sets "
+                                f"({int(target.get('backoff_percent', BACKOFF_PERCENT) * 100)}%)"
+                            )
                         else:
                             st.caption(f"{ex['sets']} set")
+                        if target.get("backoff_note"):
+                            st.caption(target["backoff_note"])
                         if target.get("suggested_extra_sets"):
                             st.caption("Volume boost: +1 extra back-off set if you feel fresh.")
                         if "previous" in target:
@@ -1548,6 +1637,8 @@ def main():
                         st.caption(target["previous"])
                     min_r, max_r = exercise["rep_range"]
                     st.caption(f"Rep range: {min_r}-{max_r} • Rest: {exercise['rest']}")
+                    if target.get("backoff_note"):
+                        st.caption(target["backoff_note"])
 
                     # Return-from-break warning
                     if target.get("days_since_last") and target["days_since_last"] > 14:
@@ -1575,7 +1666,8 @@ def main():
                             step=increment,
                             key=f"{key_prefix}_top_weight"
                         )
-                        suggested_backoff = target.get("backoff_weight") or round(top_weight * BACKOFF_PERCENT / increment) * increment
+                        backoff_percent = target.get("backoff_percent", BACKOFF_PERCENT)
+                        suggested_backoff = round(top_weight * backoff_percent / increment) * increment
                         backoff_weight = st.number_input(
                             "Back-off Weight (kg)",
                             min_value=0.0,
@@ -1585,7 +1677,10 @@ def main():
                             key=f"{key_prefix}_backoff_weight"
                         )
                         working_weight = top_weight
-                        st.caption(f"Back-off target: {backoff_weight}kg × {target.get('backoff_reps', target['reps_per_set'])} reps")
+                        st.caption(
+                            f"Back-off target: {backoff_weight}kg × {target.get('backoff_reps', target['reps_per_set'])} reps "
+                            f"({int(backoff_percent * 100)}%)"
+                        )
                     else:
                         working_weight = st.number_input(
                             "Weight (kg)",
@@ -1912,33 +2007,47 @@ def main():
                                  labels={"value": "cm", "variable": "Measurement"})
                     st.plotly_chart(fig, use_container_width=True)
 
-    # ========== TAB 6: NUTRITION ==========
+    # ========== TAB 6: PROGRESSION ==========
     with tab5:
         pass  # Handled above in tools
 
     with tab6:
-        st.markdown("## 🍽️ Nutrition")
-        c1, c2, c3 = st.columns(3)
-        with c1: st.metric("Protein", f"{USER_PROFILE['protein_g']}g")
-        with c2: st.metric("Carbs", f"{USER_PROFILE['carbs_g']}g")
-        with c3: st.metric("Fats", f"{USER_PROFILE['fats_g']}g")
+        st.markdown("## 📘 Progression System")
+        st.caption("How the app decides weight, reps, back-off loads, and deloads.")
 
-        calories = USER_PROFILE['protein_g'] * 4 + USER_PROFILE['carbs_g'] * 4 + USER_PROFILE['fats_g'] * 9
-        st.caption(f"Total: ~{calories} kcal/day")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: st.metric("Target RPE", f"{TARGET_RPE:.1f}")
+        with c2: st.metric("Back-off", f"{int(BACKOFF_PERCENT * 100)}%")
+        with c3: st.metric("Comp. Jump", f"+{WEIGHT_INCREMENT['compound']}kg")
+        with c4: st.metric("Iso Jump", f"+{WEIGHT_INCREMENT['isolation']}kg")
 
         st.divider()
-        selected_plan = st.radio("Meal Plan", list(MEAL_PLANS.keys()))
+        st.markdown("### Core Structure")
+        st.write("• Each exercise uses a top set (main overload signal) plus back-off sets (volume).")
+        st.write("• Top set drives progression; back-off sets drive muscle-building volume and quality.")
+        st.write("• You can switch to Straight Sets anytime from the Log tab.")
 
-        if selected_plan != settings.get("meal_plan"):
-            settings["meal_plan"] = selected_plan
-            save_settings(settings)
+        st.markdown("### Progression Rules")
+        st.write("• Add load when top set reaches the top of the rep range with manageable RPE and trend is stable or improving.")
+        st.write("• If near the top of the range, keep load and push reps first.")
+        st.write("• If reps drop below range or RPE spikes, load is held and you consolidate or deload.")
 
-        plan = MEAL_PLANS[selected_plan]
-        for meal_key in ["breakfast", "lunch", "pre_workout", "post_workout", "dinner"]:
-            meal = plan[meal_key]
-            with st.expander(f"{meal['name']} ({meal['timing']})"):
-                for item in meal["items"]:
-                    st.write(f"• {item}")
+        st.markdown("### Auto Back-off Adjustments")
+        st.write("• Back-off load is auto-tuned based on your last session performance.")
+        st.write("• If top set succeeds but back-off quality collapses, back-off load is reduced (up to 80%).")
+        st.write("• If back-offs are strong and controlled, back-off load can increase (up to 95%).")
+
+        st.markdown("### Fatigue & Deload Logic")
+        st.write("• Deload triggers when RPE is very high, reps crash, or drop-off is large.")
+        st.write("• After long breaks, the system auto-reduces load and ramps back in.")
+
+        st.markdown("### Volume Boosts")
+        st.write("• If you stall but RPE is stable, the system recommends one extra back-off set.")
+        st.write("• Volume is the lever for growth; load is the lever for strength.")
+
+        st.markdown("### Trend Tracking")
+        st.write("• e1RM is estimated from your best set and tracked across sessions.")
+        st.write("• Weekly review compares volume, RPE, and e1RM to keep progress on track.")
 
     # ========== TAB 7: SETTINGS ==========
     with tab7:
