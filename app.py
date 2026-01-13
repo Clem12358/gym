@@ -148,6 +148,7 @@ def save_logs(data: Dict) -> None:
         sheet.update_acell("A1", json.dumps(data, default=str))
     except Exception as e:
         st.error(f"Failed to save logs: {e}")
+    st.session_state["logs"] = data
 
 
 def load_settings() -> Dict:
@@ -171,6 +172,7 @@ def save_settings(settings: Dict) -> None:
         sheet.update_acell("A1", json.dumps(settings, default=str))
     except Exception as e:
         st.error(f"Failed to save settings: {e}")
+    st.session_state["settings"] = settings
 
 
 # ============================================================================
@@ -893,8 +895,13 @@ def main():
     if not check_password():
         return
 
-    logs = load_logs()
-    settings = load_settings()
+    if "logs" not in st.session_state:
+        st.session_state["logs"] = load_logs()
+    if "settings" not in st.session_state:
+        st.session_state["settings"] = load_settings()
+
+    logs = st.session_state["logs"]
+    settings = st.session_state["settings"]
     coach = AdaptiveCoach(logs)
 
     if settings.get("holiday_mode", False):
@@ -1010,36 +1017,23 @@ def main():
                 index=["Legs A", "Legs B", "Legs C"].index(workout_name) if workout_name not in ["Rest", "Holiday"] else 0)
 
             selected_exercises = EXERCISES[selected_workout]
-            selected_exercise_name = st.selectbox("Exercise", [ex["name"] for ex in selected_exercises])
-            selected_exercise = next(ex for ex in selected_exercises if ex["name"] == selected_exercise_name)
-
-            target = coach.get_next_target(selected_exercise_name, selected_exercise)
-
-            st.markdown("---")
-            c1, c2, c3 = st.columns(3)
-            with c1: st.metric("Target Weight", f"{target['weight']}kg")
-            with c2: st.metric("Target Reps", f"{target['reps_per_set']}")
-            with c3: st.metric("Status", target["recommendation"])
-
-            # Return-from-break warning
-            if target.get("days_since_last") and target["days_since_last"] > 14:
-                days = target["days_since_last"]
-                st.warning(f"**Welcome back!** You haven't trained {selected_exercise_name} in **{days} days**")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.info(f"**Last session:** {target['last_weight']}kg × {target['last_reps']} @ RPE {target['last_rpe']}")
-                with col2:
-                    st.success(f"**Recommended:** {target['weight']}kg ({target['deload_percent']}% deload)")
-
-            st.info(target["message"])
-
-            # Rest Timer
             with st.expander("⏱️ Rest Timer"):
-                rest_time = selected_exercise.get("rest_seconds", 90)
+                rest_exercise_name = st.selectbox(
+                    "Exercise",
+                    [ex["name"] for ex in selected_exercises],
+                    key="rest_timer_exercise"
+                )
+                rest_exercise = next(ex for ex in selected_exercises if ex["name"] == rest_exercise_name)
+                rest_time = rest_exercise.get("rest_seconds", 90)
                 st.write(f"Recommended rest: **{rest_time}s**")
-                timer_options = [30, 60, 90, 120, 180]
-                selected_time = st.select_slider("Timer (seconds)", options=timer_options, value=rest_time)
-                if st.button("▶️ Start Timer", use_container_width=True):
+                timer_options = sorted({30, 60, 90, 120, 180, rest_time})
+                selected_time = st.select_slider(
+                    "Timer (seconds)",
+                    options=timer_options,
+                    value=rest_time,
+                    key="rest_timer_seconds"
+                )
+                if st.button("▶️ Start Timer", use_container_width=True, key="rest_timer_start"):
                     progress_bar = st.progress(0)
                     timer_text = st.empty()
                     for i in range(selected_time, 0, -1):
@@ -1049,47 +1043,134 @@ def main():
                     progress_bar.progress(1.0)
                     timer_text.markdown("### ✅ GO!")
                     st.balloons()
+            st.caption("Fill out the full session and save everything in one shot.")
 
-            st.markdown("---")
-            st.markdown("### 📊 Log Sets")
+            with st.form("log_session_form"):
+                session_data = []
+                for exercise in selected_exercises:
+                    exercise_name = exercise["name"]
+                    target = coach.get_next_target(exercise_name, exercise)
 
-            weight = st.number_input("Weight (kg)", min_value=0.0, max_value=500.0,
-                                    value=float(target["weight"]) if target["weight"] else 20.0, step=1.25)
+                    st.markdown(f"### {create_exercise_link(exercise_name, exercise['video'])}")
+                    c1, c2, c3 = st.columns(3)
+                    with c1: st.metric("Target Weight", f"{target['weight']}kg")
+                    with c2: st.metric("Target Reps", f"{target['reps_per_set']}")
+                    with c3: st.metric("Status", target["recommendation"])
 
-            sets_data = []
-            cols = st.columns(selected_exercise["sets"])
-            for i, col in enumerate(cols):
-                with col:
-                    st.markdown(f"**Set {i+1}**")
-                    reps = st.number_input("Reps", min_value=0, max_value=50, value=target["reps_per_set"], key=f"reps_{i}")
-                    rpe = st.slider("RPE", 5.0, 10.0, 8.0, 0.5, key=f"rpe_{i}")
-                    sets_data.append({"reps": reps, "rpe": rpe})
+                    if "previous" in target:
+                        st.caption(target["previous"])
+                    min_r, max_r = exercise["rep_range"]
+                    st.caption(f"Rep range: {min_r}-{max_r} • Rest: {exercise['rest']}")
 
-            notes = st.text_area("Notes", placeholder="How did it feel?")
+                    # Return-from-break warning
+                    if target.get("days_since_last") and target["days_since_last"] > 14:
+                        days = target["days_since_last"]
+                        st.warning(f"**Welcome back!** You haven't trained {exercise_name} in **{days} days**")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.info(f"**Last session:** {target['last_weight']}kg × {target['last_reps']} @ RPE {target['last_rpe']}")
+                        with col2:
+                            st.success(f"**Recommended:** {target['weight']}kg ({target['deload_percent']}% deload)")
 
-            if st.button("✅ Save Workout", type="primary", use_container_width=True):
-                # Check for PR
-                is_pr, old_pr = check_for_new_pr(selected_exercise_name, weight, logs)
+                    st.info(target["message"])
 
-                log_entry = {"date": datetime.now().isoformat(), "workout": selected_workout,
-                            "weight": weight, "sets": sets_data, "notes": notes}
+                    key_prefix = f"log_{selected_workout}_{exercise_name}".replace(" ", "_")
+                    weight = st.number_input(
+                        "Weight (kg)",
+                        min_value=0.0,
+                        max_value=500.0,
+                        value=float(target["weight"]) if target["weight"] else 20.0,
+                        step=1.25,
+                        key=f"{key_prefix}_weight"
+                    )
 
-                if selected_exercise_name not in logs["exercises"]:
-                    logs["exercises"][selected_exercise_name] = []
-                logs["exercises"][selected_exercise_name].insert(0, log_entry)
-                logs["workouts"].append({"date": datetime.now().isoformat(), "workout_type": selected_workout,
-                                        "exercise": selected_exercise_name, "data": log_entry})
+                    sets_data = []
+                    cols = st.columns(exercise["sets"])
+                    for i, col in enumerate(cols):
+                        with col:
+                            st.markdown(f"**Set {i+1}**")
+                            reps = st.number_input(
+                                "Reps",
+                                min_value=0,
+                                max_value=50,
+                                value=target["reps_per_set"],
+                                key=f"{key_prefix}_reps_{i}"
+                            )
+                            rpe = st.slider(
+                                "RPE",
+                                5.0,
+                                10.0,
+                                8.0,
+                                0.5,
+                                key=f"{key_prefix}_rpe_{i}"
+                            )
+                            sets_data.append({"reps": reps, "rpe": rpe})
+
+                    notes = st.text_area("Notes", placeholder="How did it feel?", key=f"{key_prefix}_notes")
+
+                    session_data.append({
+                        "exercise": exercise,
+                        "weight": weight,
+                        "sets": sets_data,
+                        "notes": notes
+                    })
+
+                    st.markdown("---")
+
+                submitted = st.form_submit_button("✅ Save Session", type="primary", use_container_width=True)
+
+            if submitted:
+                session_time = datetime.now().isoformat()
+                pr_hits = []
+                score_lines = []
+
+                for entry in session_data:
+                    exercise = entry["exercise"]
+                    exercise_name = exercise["name"]
+                    weight = entry["weight"]
+                    sets_data = entry["sets"]
+                    notes = entry["notes"]
+
+                    is_pr, old_pr = check_for_new_pr(exercise_name, weight, logs)
+
+                    log_entry = {
+                        "date": session_time,
+                        "workout": selected_workout,
+                        "weight": weight,
+                        "sets": sets_data,
+                        "notes": notes
+                    }
+
+                    if exercise_name not in logs["exercises"]:
+                        logs["exercises"][exercise_name] = []
+                    logs["exercises"][exercise_name].insert(0, log_entry)
+                    logs["workouts"].append({
+                        "date": session_time,
+                        "workout_type": selected_workout,
+                        "exercise": exercise_name,
+                        "data": log_entry
+                    })
+
+                    min_r, max_r = exercise["rep_range"]
+                    score, consistency = coach.calculate_session_score(sets_data, min_r, max_r)
+                    score_lines.append(f"{exercise_name}: {score:.0f}/100 - {consistency}")
+
+                    if is_pr and weight > old_pr:
+                        pr_hits.append(f"{exercise_name}: {weight}kg (+{weight-old_pr}kg)")
+
                 save_logs(logs)
 
-                min_r, max_r = selected_exercise["rep_range"]
-                score, consistency = coach.calculate_session_score(sets_data, min_r, max_r)
-
-                if is_pr and weight > old_pr:
-                    st.markdown(f'<div class="pr-celebration">🏆 NEW PR! 🏆<br>{weight}kg (+{weight-old_pr}kg)</div>',
-                               unsafe_allow_html=True)
+                if pr_hits:
+                    pr_details = "<br>".join(pr_hits)
+                    st.markdown(
+                        f'<div class="pr-celebration">🏆 NEW PR! 🏆<br>{pr_details}</div>',
+                        unsafe_allow_html=True
+                    )
                     st.balloons()
 
-                st.success(f"Logged! Score: {score:.0f}/100 - {consistency}")
+                st.success("Session logged!")
+                for line in score_lines:
+                    st.write(f"• {line}")
 
     # ========== TAB 3: PROGRESS ==========
     with tab3:
