@@ -44,6 +44,10 @@ BASE_SCHEDULE = {
 }
 
 WEIGHT_INCREMENT = {"compound": 2.5, "isolation": 1.25}
+BACKOFF_PERCENT = 0.90
+TARGET_RPE = 8.0
+MAX_RPE = 9.0
+DELOAD_RPE = 9.5
 
 COMPOUND_EXERCISES = [
     "High Bar Squat", "Romanian Deadlift", "Leg Press",
@@ -179,8 +183,51 @@ def safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def serialize_sets(sets_data: List[Dict]) -> str:
     return json.dumps(sets_data, separators=(",", ":"))
+
+
+def rpe_to_rir(rpe: float) -> float:
+    return max(0.0, 10.0 - rpe)
+
+
+def estimate_e1rm(weight: float, reps: int, rpe: float) -> float:
+    if weight <= 0 or reps <= 0:
+        return 0.0
+    effective_reps = reps + rpe_to_rir(rpe)
+    return weight * (1 + (effective_reps / 30.0))
+
+
+def get_session_sets(entry: Dict) -> List[Dict]:
+    base_weight = safe_float(entry.get("weight", 0))
+    sets = entry.get("sets", []) or []
+    normalized = []
+    for s in sets:
+        normalized.append({
+            "reps": safe_int(s.get("reps", 0)),
+            "rpe": safe_float(s.get("rpe", TARGET_RPE), TARGET_RPE),
+            "weight": safe_float(s.get("weight", base_weight), base_weight)
+        })
+    return normalized
+
+
+def get_session_top_weight(entry: Dict) -> float:
+    sets = get_session_sets(entry)
+    if not sets:
+        return safe_float(entry.get("weight", 0))
+    return max(s["weight"] for s in sets)
+
+
+def get_session_volume(entry: Dict) -> float:
+    sets = get_session_sets(entry)
+    return sum(s["weight"] * s["reps"] for s in sets)
 
 
 def normalize_logs(logs: Dict) -> Dict:
@@ -220,15 +267,28 @@ def migrate_legacy_logs(
     measurements_ws
 ) -> None:
     workout_rows = []
-    for exercise_name, history in legacy_logs.get("exercises", {}).items():
-        for entry in reversed(history):
+    exercise_history = legacy_logs.get("exercises", {})
+    if exercise_history:
+        for exercise_name, history in exercise_history.items():
+            for entry in reversed(history):
+                workout_rows.append([
+                    entry.get("date", ""),
+                    entry.get("workout", ""),
+                    exercise_name,
+                    entry.get("weight", 0),
+                    serialize_sets(entry.get("sets", [])),
+                    entry.get("notes", "")
+                ])
+    else:
+        for entry in legacy_logs.get("workouts", []):
+            data = entry.get("data", {})
             workout_rows.append([
                 entry.get("date", ""),
-                entry.get("workout", ""),
-                exercise_name,
-                entry.get("weight", 0),
-                serialize_sets(entry.get("sets", [])),
-                entry.get("notes", "")
+                entry.get("workout_type", ""),
+                entry.get("exercise", ""),
+                data.get("weight", 0),
+                serialize_sets(data.get("sets", [])),
+                data.get("notes", "")
             ])
     append_rows_safe(workout_ws, workout_rows)
 
@@ -414,16 +474,16 @@ def export_logs_to_csv(logs: Dict) -> str:
             weight = entry.get("weight", 0)
             workout = entry.get("workout", "")
             notes = entry.get("notes", "")
-            sets = entry.get("sets", [])
+            sets = get_session_sets(entry)
             for i, s in enumerate(sets):
                 rows.append({
                     "Date": date,
                     "Exercise": exercise_name,
                     "Workout": workout,
                     "Set": i + 1,
-                    "Weight_kg": weight,
+                    "Weight_kg": s.get("weight", weight),
                     "Reps": s.get("reps", 0),
-                    "RPE": s.get("rpe", 8),
+                    "RPE": s.get("rpe", TARGET_RPE),
                     "Notes": notes
                 })
 
@@ -461,13 +521,15 @@ def import_csv_to_logs(csv_content: str, logs: Dict) -> Tuple[Dict, int, List[Li
             for _, row in group.iterrows():
                 sets_data.append({
                     "reps": int(row.get("Reps", 0)),
-                    "rpe": float(row.get("RPE", 8))
+                    "rpe": float(row.get("RPE", 8)),
+                    "weight": float(row.get("Weight_kg", 0))
                 })
 
+            entry_weight = max([s.get("weight", 0) for s in sets_data]) if sets_data else 0
             entry = {
                 "date": str(date),
                 "workout": str(group.iloc[0].get("Workout", "")),
-                "weight": float(group.iloc[0]["Weight_kg"]),
+                "weight": entry_weight,
                 "sets": sets_data,
                 "notes": str(group.iloc[0].get("Notes", ""))
             }
@@ -661,6 +723,64 @@ def calculate_streak(logs: Dict, settings: Dict) -> Dict:
     }
 
 
+def parse_log_date(date_str: str) -> Optional[datetime]:
+    if not date_str:
+        return None
+    try:
+        parsed = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+    except (ValueError, TypeError):
+        return None
+
+
+def get_weekly_review(logs: Dict, days: int = 7) -> Dict:
+    now = datetime.now()
+    recent_cutoff = now - timedelta(days=days)
+    previous_cutoff = now - timedelta(days=days * 2)
+
+    review = {
+        "recent": {"sessions": 0, "sets": 0, "volume": 0, "rpe_sum": 0, "rpe_count": 0, "e1rm_sum": 0},
+        "previous": {"sessions": 0, "sets": 0, "volume": 0, "rpe_sum": 0, "rpe_count": 0, "e1rm_sum": 0}
+    }
+
+    for _, history in logs.get("exercises", {}).items():
+        for entry in history:
+            entry_date = parse_log_date(entry.get("date", ""))
+            if not entry_date:
+                continue
+            if entry_date >= recent_cutoff:
+                bucket = review["recent"]
+            elif entry_date >= previous_cutoff:
+                bucket = review["previous"]
+            else:
+                continue
+
+            sets = get_session_sets(entry)
+            if not sets:
+                continue
+            bucket["sessions"] += 1
+            bucket["sets"] += len(sets)
+            bucket["volume"] += sum([s.get("weight", 0) * s.get("reps", 0) for s in sets])
+            bucket["rpe_sum"] += sum([s.get("rpe", TARGET_RPE) for s in sets])
+            bucket["rpe_count"] += len(sets)
+
+            best_set = max(
+                sets,
+                key=lambda s: estimate_e1rm(s.get("weight", 0), s.get("reps", 0), s.get("rpe", TARGET_RPE))
+            )
+            bucket["e1rm_sum"] += estimate_e1rm(
+                best_set.get("weight", 0),
+                best_set.get("reps", 0),
+                best_set.get("rpe", TARGET_RPE)
+            )
+
+    for bucket in review.values():
+        bucket["avg_rpe"] = round(bucket["rpe_sum"] / bucket["rpe_count"], 2) if bucket["rpe_count"] else 0
+        bucket["avg_e1rm"] = round(bucket["e1rm_sum"] / bucket["sessions"], 1) if bucket["sessions"] else 0
+
+    return review
+
+
 # ============================================================================
 # PR DETECTION
 # ============================================================================
@@ -672,7 +792,7 @@ def check_for_new_pr(exercise_name: str, weight: float, logs: Dict) -> Tuple[boo
     if not history:
         return True, 0  # First entry is always a PR
 
-    max_weight = max([h.get("weight", 0) for h in history])
+    max_weight = max([get_session_top_weight(h) for h in history])
 
     if weight > max_weight:
         return True, max_weight
@@ -787,7 +907,7 @@ class AdaptiveCoach:
         reps_list = []
         for set_data in sets_data:
             reps = set_data.get("reps", 0)
-            rpe = set_data.get("rpe", 8)
+            rpe = set_data.get("rpe", TARGET_RPE)
             reps_list.append(reps)
             scores.append(self.calculate_set_score(reps, rpe, min_range, max_range))
         avg_score = sum(scores) / len(scores)
@@ -801,6 +921,44 @@ class AdaptiveCoach:
             consistency = "Work on set-to-set consistency"
             avg_score *= 0.95
         return min(100, avg_score), consistency
+
+    def get_session_stats(self, session: Dict, rep_range: Tuple[int, int]) -> Dict:
+        sets = get_session_sets(session)
+        if not sets:
+            return {
+                "sets": [],
+                "top_weight": safe_float(session.get("weight", 0)),
+                "avg_reps": 0,
+                "min_reps": 0,
+                "max_reps": 0,
+                "avg_rpe": TARGET_RPE,
+                "rep_dropoff": 0,
+                "volume": 0,
+                "best_e1rm": 0,
+                "all_sets_in_range": False
+            }
+
+        min_range, max_range = rep_range
+        weights = [s.get("weight", 0) for s in sets]
+        reps = [s.get("reps", 0) for s in sets]
+        rpes = [s.get("rpe", TARGET_RPE) for s in sets]
+
+        volume = sum(w * r for w, r in zip(weights, reps))
+        e1rms = [estimate_e1rm(w, r, rpe) for w, r, rpe in zip(weights, reps, rpes)]
+
+        in_range_sets = sum(1 for r in reps if min_range <= r <= max_range)
+        return {
+            "sets": sets,
+            "top_weight": max(weights) if weights else 0,
+            "avg_reps": sum(reps) / len(reps),
+            "min_reps": min(reps),
+            "max_reps": max(reps),
+            "avg_rpe": sum(rpes) / len(rpes),
+            "rep_dropoff": max(reps) - min(reps),
+            "volume": volume,
+            "best_e1rm": max(e1rms) if e1rms else 0,
+            "all_sets_in_range": in_range_sets == len(reps)
+        }
 
     def get_exercise_history(self, exercise_name: str, limit: int = 10) -> List[Dict]:
         history = self.exercise_history.get(exercise_name, [])
@@ -835,82 +993,68 @@ class AdaptiveCoach:
         else:
             return (0.60, "FRESH_START", "Fresh start - your muscles remember more than you think!")
 
-    def analyze_multi_session_trend(self, exercise_name: str, num_sessions: int = 3) -> Dict:
+    def analyze_multi_session_trend(self, exercise_name: str, rep_range: Tuple[int, int], num_sessions: int = 3) -> Dict:
         history = self.get_exercise_history(exercise_name, num_sessions + 2)
         if len(history) < 1:
-            return {"has_data": False, "trend": "NO_DATA", "avg_weight": None, "avg_reps": None,
-                    "avg_rpe": None, "weight_trend": 0, "rep_trend": 0, "rpe_trend": 0, "sessions_analyzed": 0}
+            return {"has_data": False, "trend": "NO_DATA", "avg_e1rm": None, "avg_reps": None,
+                    "avg_rpe": None, "e1rm_trend": 0, "rep_trend": 0, "rpe_trend": 0, "sessions_analyzed": 0}
 
-        weights = []
-        all_reps = []
-        all_rpe = []
-        for session in history[:num_sessions]:
-            weights.append(session.get("weight", 0))
-            sets = session.get("sets", [])
-            for s in sets:
-                all_reps.append(s.get("reps", 0))
-                all_rpe.append(s.get("rpe", 8))
+        session_stats = [self.get_session_stats(h, rep_range) for h in history[:num_sessions]]
+        e1rms = [s["best_e1rm"] for s in session_stats]
+        avg_reps = sum([s["avg_reps"] for s in session_stats]) / len(session_stats)
+        avg_rpe = sum([s["avg_rpe"] for s in session_stats]) / len(session_stats)
 
-        avg_weight = sum(weights) / len(weights) if weights else 0
-        avg_reps = sum(all_reps) / len(all_reps) if all_reps else 0
-        avg_rpe = sum(all_rpe) / len(all_rpe) if all_rpe else 8
+        e1rm_trend = rep_trend = rpe_trend = 0
+        if len(session_stats) >= 2:
+            recent = session_stats[0]
+            older = session_stats[1:num_sessions]
+            prev_avg_e1rm = sum([s["best_e1rm"] for s in older]) / len(older)
+            prev_avg_reps = sum([s["avg_reps"] for s in older]) / len(older)
+            prev_avg_rpe = sum([s["avg_rpe"] for s in older]) / len(older)
 
-        weight_trend = rep_trend = rpe_trend = 0
-        if len(history) >= 2:
-            recent_weight = history[0].get("weight", 0)
-            older_weights = [h.get("weight", 0) for h in history[1:num_sessions]]
-            if older_weights:
-                weight_trend = recent_weight - sum(older_weights) / len(older_weights)
+            e1rm_trend = recent["best_e1rm"] - prev_avg_e1rm
+            rep_trend = recent["avg_reps"] - prev_avg_reps
+            rpe_trend = recent["avg_rpe"] - prev_avg_rpe
 
-            recent_reps = [s.get("reps", 0) for s in history[0].get("sets", [])]
-            recent_avg_reps = sum(recent_reps) / len(recent_reps) if recent_reps else 0
-            older_reps = []
-            for h in history[1:num_sessions]:
-                older_reps.extend([s.get("reps", 0) for s in h.get("sets", [])])
-            old_avg_reps = sum(older_reps) / len(older_reps) if older_reps else 0
-            rep_trend = recent_avg_reps - old_avg_reps
+        prev_avg = (sum(e1rms[1:]) / len(e1rms[1:])) if len(e1rms) > 1 else e1rms[0]
+        threshold = max(0.5, prev_avg * 0.01) if prev_avg else 0.5
 
-            recent_rpe = [s.get("rpe", 8) for s in history[0].get("sets", [])]
-            recent_avg_rpe = sum(recent_rpe) / len(recent_rpe) if recent_rpe else 8
-            older_rpe = []
-            for h in history[1:num_sessions]:
-                older_rpe.extend([s.get("rpe", 8) for s in h.get("sets", [])])
-            old_avg_rpe = sum(older_rpe) / len(older_rpe) if older_rpe else 8
-            rpe_trend = recent_avg_rpe - old_avg_rpe
-
-        if weight_trend > 0 or (rep_trend > 0.5 and weight_trend >= 0):
+        if e1rm_trend > threshold or (rep_trend > 0.5 and rpe_trend <= 0.3):
             trend = "IMPROVING"
-        elif weight_trend < -1 or (rep_trend < -1 and rpe_trend > 0.5):
+        elif e1rm_trend < -threshold or (rep_trend < -0.5 and rpe_trend > 0.5):
             trend = "DECLINING"
-        elif abs(weight_trend) < 0.5 and abs(rep_trend) < 0.5:
+        elif abs(e1rm_trend) <= threshold and abs(rep_trend) <= 0.5:
             trend = "STABLE"
         else:
             trend = "VARIABLE"
 
-        return {"has_data": True, "trend": trend, "avg_weight": round(avg_weight, 1),
-                "avg_reps": round(avg_reps, 1), "avg_rpe": round(avg_rpe, 1),
-                "weight_trend": round(weight_trend, 1), "rep_trend": round(rep_trend, 1),
-                "rpe_trend": round(rpe_trend, 1), "sessions_analyzed": min(len(history), num_sessions)}
+        return {
+            "has_data": True,
+            "trend": trend,
+            "avg_e1rm": round(sum(e1rms) / len(e1rms), 1),
+            "avg_reps": round(avg_reps, 1),
+            "avg_rpe": round(avg_rpe, 1),
+            "e1rm_trend": round(e1rm_trend, 1),
+            "rep_trend": round(rep_trend, 1),
+            "rpe_trend": round(rpe_trend, 1),
+            "sessions_analyzed": min(len(history), num_sessions)
+        }
 
-    def detect_plateau(self, exercise_name: str) -> Tuple[bool, int, str]:
+    def detect_plateau(self, exercise_name: str, rep_range: Tuple[int, int]) -> Tuple[bool, int, str]:
         history = self.get_exercise_history(exercise_name, 6)
         if len(history) < 3:
             return False, 0, "Keep training - building baseline data"
 
         stall_count = 0
         for i in range(len(history) - 1):
-            current = history[i]
-            previous = history[i + 1]
-            current_weight = current.get("weight", 0)
-            previous_weight = previous.get("weight", 0)
-            current_reps = sum([s.get("reps", 0) for s in current.get("sets", [])])
-            previous_reps = sum([s.get("reps", 0) for s in previous.get("sets", [])])
-            if current_weight <= previous_weight and current_reps <= previous_reps:
+            current = self.get_session_stats(history[i], rep_range)
+            previous = self.get_session_stats(history[i + 1], rep_range)
+            if current["best_e1rm"] <= previous["best_e1rm"] + 0.5 and current["avg_reps"] <= previous["avg_reps"] + 0.25:
                 stall_count += 1
             else:
                 break
 
-        trend = self.analyze_multi_session_trend(exercise_name, 3)
+        trend = self.analyze_multi_session_trend(exercise_name, rep_range, 3)
         if trend["has_data"] and trend["rpe_trend"] > 0.5 and trend["trend"] != "IMPROVING":
             if stall_count >= 2:
                 return True, stall_count, "RPE increasing without progress - fatigue accumulating."
@@ -918,92 +1062,180 @@ class AdaptiveCoach:
         if stall_count >= 4:
             return True, stall_count, "Significant plateau! Time for a strategic deload."
         elif stall_count >= 2:
-            return True, stall_count, "Minor stall detected. Focus on technique."
+            return True, stall_count, "Minor stall detected. Consider a volume boost."
         return False, stall_count, "Progressing well!"
 
     def get_next_target(self, exercise_name: str, exercise_config: Dict) -> Dict:
-        history = self.get_exercise_history(exercise_name, 6)
+        history = self.get_exercise_history(exercise_name, 8)
         min_range, max_range = exercise_config["rep_range"]
         is_compound = exercise_name in COMPOUND_EXERCISES
         increment = WEIGHT_INCREMENT["compound"] if is_compound else WEIGHT_INCREMENT["isolation"]
 
+        def round_to_increment(value: float) -> float:
+            if increment <= 0:
+                return value
+            return round(value / increment) * increment
+
+        def build_target(weight: float, reps: int, recommendation: str, message: str, **kwargs) -> Dict:
+            backoff_weight = round_to_increment(weight * BACKOFF_PERCENT)
+            backoff_reps = min(max_range, max(reps, min_range) + 2)
+            target = {
+                "weight": round_to_increment(weight),
+                "reps_per_set": reps,
+                "recommendation": recommendation,
+                "message": message,
+                "backoff_weight": backoff_weight,
+                "backoff_reps": backoff_reps
+            }
+            target.update(kwargs)
+            return target
+
         if not history:
             starting_weight = STARTING_WEIGHTS.get(exercise_name, 20)
-            return {"weight": starting_weight, "reps_per_set": min_range, "recommendation": "BASELINE",
-                    "message": f"First time! Start with {starting_weight}kg for {min_range} reps.",
-                    "confidence": 50, "is_new": True, "trend_info": None}
+            return build_target(
+                starting_weight,
+                min_range,
+                "BASELINE",
+                f"First time! Start with {starting_weight}kg for {min_range} reps.",
+                confidence=50,
+                is_new=True,
+                trend_info=None
+            )
 
-        # Check for return-from-break scenario
         days_gap = self.get_days_since_last_session(exercise_name)
         last_session = history[0]
-        last_weight = last_session.get("weight", 0)
-        last_sets = last_session.get("sets", [])
-        last_reps = [s.get("reps", 0) for s in last_sets]
-        last_avg_rpe = sum([s.get("rpe", 8) for s in last_sets]) / len(last_sets) if last_sets else 8
+        last_stats = self.get_session_stats(last_session, (min_range, max_range))
+        last_weight = last_stats["top_weight"]
+        last_reps = [s.get("reps", 0) for s in last_stats["sets"]]
+        last_avg_rpe = last_stats["avg_rpe"]
 
         if days_gap is not None and days_gap > 14:
             deload_factor, phase, phase_msg = self.get_return_deload_factor(days_gap)
-            return_weight = round(last_weight * deload_factor / 2.5) * 2.5  # Round to nearest 2.5kg
+            return_weight = round_to_increment(last_weight * deload_factor)
             deload_percent = int((1 - deload_factor) * 100)
 
-            return {
-                "weight": return_weight,
-                "reps_per_set": min_range,
-                "recommendation": phase,
-                "message": phase_msg,
-                "confidence": 85,
-                "is_new": False,
-                "trend_info": None,
-                "days_since_last": days_gap,
-                "last_weight": last_weight,
-                "last_reps": last_reps,
-                "last_rpe": round(last_avg_rpe, 1),
-                "deload_percent": deload_percent,
-                "previous": f"Last ({days_gap} days ago): {last_weight}kg × {last_reps}"
-            }
+            return build_target(
+                return_weight,
+                min_range,
+                phase,
+                phase_msg,
+                confidence=85,
+                is_new=False,
+                trend_info=None,
+                days_since_last=days_gap,
+                last_weight=last_weight,
+                last_reps=last_reps,
+                last_rpe=round(last_avg_rpe, 1),
+                deload_percent=deload_percent,
+                previous=f"Last ({days_gap} days ago): {last_weight}kg × {last_reps}"
+            )
 
-        trend = self.analyze_multi_session_trend(exercise_name, 3)
+        trend = self.analyze_multi_session_trend(exercise_name, (min_range, max_range), 3)
 
         if len(history) == 1:
-            return {"weight": last_weight, "reps_per_set": min_range + 1, "recommendation": "BUILD",
-                    "message": f"Second session! Use {last_weight}kg again, aim for {min_range + 1} reps.",
-                    "confidence": 60, "is_new": False, "trend_info": trend,
-                    "previous": f"Last: {last_weight}kg × {[s.get('reps', 0) for s in last_sets]}"}
+            return build_target(
+                last_weight,
+                min_range + 1,
+                "BUILD",
+                f"Second session! Use {last_weight}kg again, aim for {min_range + 1} reps.",
+                confidence=60,
+                is_new=False,
+                trend_info=trend,
+                previous=f"Last: {last_weight}kg × {last_reps}"
+            )
 
-        avg_reps = sum([s.get("reps", 0) for s in last_sets]) / len(last_sets)
-        avg_rpe = sum([s.get("rpe", 8) for s in last_sets]) / len(last_sets)
-        min_reps = min([s.get("reps", 0) for s in last_sets])
-        is_plateaued, stall_count, plateau_msg = self.detect_plateau(exercise_name)
+        is_plateaued, stall_count, plateau_msg = self.detect_plateau(exercise_name, (min_range, max_range))
 
-        if is_plateaued and stall_count >= 4:
-            return {"weight": round(last_weight * 0.85, 1), "reps_per_set": min_range,
-                    "recommendation": "DELOAD", "message": f"Strategic deload! Use {round(last_weight * 0.85, 1)}kg.",
-                    "confidence": 95, "plateau_info": plateau_msg, "is_new": False, "trend_info": trend}
+        if last_stats["avg_rpe"] >= DELOAD_RPE or last_stats["min_reps"] < min_range - 1 or last_stats["rep_dropoff"] >= 4:
+            deload_weight = round_to_increment(last_weight * 0.9)
+            return build_target(
+                deload_weight,
+                min_range,
+                "DELOAD",
+                f"Fatigue spike detected. Reset to {deload_weight}kg and rebuild.",
+                confidence=90,
+                is_new=False,
+                trend_info=trend,
+                plateau_info=plateau_msg if is_plateaued else None
+            )
 
-        if min_reps >= max_range and avg_rpe <= 8 and trend["trend"] in ["IMPROVING", "STABLE"]:
+        if is_plateaued and stall_count >= 3:
+            deload_weight = round_to_increment(last_weight * 0.92)
+            return build_target(
+                deload_weight,
+                min_range,
+                "DELOAD",
+                f"Plateau detected. Strategic deload to {deload_weight}kg.",
+                confidence=90,
+                is_new=False,
+                trend_info=trend,
+                plateau_info=plateau_msg
+            )
+
+        if last_stats["min_reps"] >= max_range and last_stats["avg_rpe"] <= (MAX_RPE - 0.5) and trend["trend"] != "DECLINING":
             new_weight = last_weight + increment
-            return {"weight": new_weight, "reps_per_set": min_range, "recommendation": "PROGRESS",
-                    "message": f"Add weight! {new_weight}kg × {min_range} reps", "confidence": 90,
-                    "previous": f"Last 3 avg: {trend['avg_weight']}kg × {trend['avg_reps']:.0f} reps",
-                    "is_new": False, "trend_info": trend}
+            return build_target(
+                new_weight,
+                min_range,
+                "PROGRESS",
+                f"Add weight! {new_weight}kg × {min_range} reps.",
+                confidence=90,
+                previous=f"Last 3 avg e1RM: {trend.get('avg_e1rm', 0)}kg",
+                is_new=False,
+                trend_info=trend
+            )
 
-        if avg_reps >= max_range - 0.5 and avg_rpe <= 8.5:
-            return {"weight": last_weight, "reps_per_set": max_range, "recommendation": "PUSH",
-                    "message": f"Hit {max_range} on ALL sets to unlock +{increment}kg.", "confidence": 80,
-                    "previous": f"Last: {last_weight}kg × {[s.get('reps', 0) for s in last_sets]}",
-                    "is_new": False, "trend_info": trend}
+        if last_stats["avg_reps"] >= max_range - 0.5 and last_stats["avg_rpe"] <= MAX_RPE:
+            return build_target(
+                last_weight,
+                max_range,
+                "PUSH",
+                f"Hit {max_range} on all sets to unlock +{increment}kg.",
+                confidence=80,
+                previous=f"Last: {last_weight}kg × {last_reps}",
+                is_new=False,
+                trend_info=trend
+            )
 
-        if avg_reps >= min_range:
-            target_reps = min(int(avg_reps) + 1, max_range)
-            return {"weight": last_weight, "reps_per_set": target_reps, "recommendation": "BUILD",
-                    "message": f"Target: {last_weight}kg × {target_reps} reps.", "confidence": 75,
-                    "previous": f"Last: {last_weight}kg × {[s.get('reps', 0) for s in last_sets]}",
-                    "is_new": False, "trend_info": trend}
+        if is_plateaued and last_stats["avg_rpe"] <= (MAX_RPE - 0.5):
+            target_reps = min(max_range, max(int(round(last_stats["avg_reps"])), min_range))
+            return build_target(
+                last_weight,
+                target_reps,
+                "VOLUME",
+                "Stalled but fresh. Add one back-off set for extra volume.",
+                confidence=80,
+                previous=f"Last: {last_weight}kg × {last_reps}",
+                is_new=False,
+                trend_info=trend,
+                plateau_info=plateau_msg,
+                suggested_extra_sets=1
+            )
 
-        return {"weight": last_weight, "reps_per_set": min_range, "recommendation": "CONSOLIDATE",
-                "message": f"Same weight ({last_weight}kg), solid {min_range} reps.", "confidence": 70,
-                "previous": f"Last: {last_weight}kg @ RPE {avg_rpe:.0f}", "is_new": False,
-                "trend_info": trend, "plateau_info": plateau_msg if is_plateaued else None}
+        if last_stats["avg_reps"] >= min_range:
+            target_reps = min(int(last_stats["avg_reps"]) + 1, max_range)
+            return build_target(
+                last_weight,
+                target_reps,
+                "BUILD",
+                f"Target: {last_weight}kg × {target_reps} reps.",
+                confidence=75,
+                previous=f"Last: {last_weight}kg × {last_reps}",
+                is_new=False,
+                trend_info=trend
+            )
+
+        return build_target(
+            last_weight,
+            min_range,
+            "CONSOLIDATE",
+            f"Same weight ({last_weight}kg), focus on clean {min_range} reps.",
+            confidence=70,
+            previous=f"Last: {last_weight}kg @ avg RPE {last_stats['avg_rpe']:.1f}",
+            is_new=False,
+            trend_info=trend,
+            plateau_info=plateau_msg if is_plateaued else None
+        )
 
     def get_workout_summary(self, workout_name: str, exercises: List[Dict]) -> List[Dict]:
         summary = []
@@ -1032,14 +1264,14 @@ class AdaptiveCoach:
                 date = session.get("date", "")
                 if date:
                     all_dates.append(date)
-                weight = session.get("weight", 0)
-                weights.append(weight)
-                sets = session.get("sets", [])
+                session_top_weight = get_session_top_weight(session)
+                weights.append(session_top_weight)
+                sets = get_session_sets(session)
                 for s in sets:
                     reps = s.get("reps", 0)
                     all_reps.append(reps)
                     stats["total_reps"] += reps
-                    stats["total_volume"] += weight * reps
+                    stats["total_volume"] += s.get("weight", session_top_weight) * reps
                     stats["total_sets"] += 1
 
             if weights:
@@ -1049,8 +1281,7 @@ class AdaptiveCoach:
                 ex_stats["weight_gain"] = weights[0] - weights[-1]
             if all_reps:
                 ex_stats["avg_reps"] = round(sum(all_reps) / len(all_reps), 1)
-            ex_stats["total_volume"] = sum([w * sum([s.get("reps", 0) for s in h.get("sets", [])])
-                                           for h, w in zip(history, weights)])
+            ex_stats["total_volume"] = sum([get_session_volume(h) for h in history])
             stats["exercises"][exercise_name] = ex_stats
             stats["total_sessions"] += len(history)
             if ex_stats["max_weight"] > 0:
@@ -1094,7 +1325,7 @@ def create_exercise_link(name: str, url: str) -> str:
 def format_recommendation_badge(recommendation: str) -> str:
     colors = {
         "PROGRESS": "🟢", "PUSH": "🔵", "BUILD": "🟡", "CONSOLIDATE": "🟠",
-        "DELOAD": "🔴", "BASELINE": "⚪", "NORMAL": "🟢",
+        "DELOAD": "🔴", "BASELINE": "⚪", "NORMAL": "🟢", "VOLUME": "🟡",
         "LIGHT_RETURN": "🔵", "REACCLIMATION": "🟡", "REBUILDING": "🟠", "FRESH_START": "🔴"
     }
     return f"{colors.get(recommendation, '⚪')} {recommendation.replace('_', ' ')}"
@@ -1230,7 +1461,13 @@ def main():
                     st.markdown(f"### {create_exercise_link(ex['name'], ex['video'])}")
                     c1, c2 = st.columns([2, 1])
                     with c1:
-                        st.markdown(f"**{target['weight']}kg × {target['reps_per_set']} × {ex['sets']} sets**")
+                        st.markdown(f"**Top: {target['weight']}kg × {target['reps_per_set']}**")
+                        if ex["sets"] > 1:
+                            st.caption(f"Back-off: {target['backoff_weight']}kg × {target['backoff_reps']} × {ex['sets'] - 1} sets")
+                        else:
+                            st.caption(f"{ex['sets']} set")
+                        if target.get("suggested_extra_sets"):
+                            st.caption("Volume boost: +1 extra back-off set if you feel fresh.")
                         if "previous" in target:
                             st.caption(target["previous"])
                     with c2:
@@ -1286,6 +1523,13 @@ def main():
                     progress_bar.progress(1.0)
                     timer_text.markdown("### ✅ GO!")
                     st.balloons()
+            log_scheme = st.radio(
+                "Set Scheme",
+                ["Straight Sets", "Top Set + Back-off"],
+                horizontal=True,
+                key="log_scheme",
+                index=1
+            )
             st.caption("Fill out the full session and save everything in one shot.")
 
             with st.form("log_session_form"):
@@ -1318,25 +1562,68 @@ def main():
                     st.info(target["message"])
 
                     key_prefix = f"log_{selected_workout}_{exercise_name}".replace(" ", "_")
-                    weight = st.number_input(
-                        "Weight (kg)",
-                        min_value=0.0,
-                        max_value=500.0,
-                        value=float(target["weight"]) if target["weight"] else 20.0,
-                        step=1.25,
-                        key=f"{key_prefix}_weight"
-                    )
+                    use_backoff = log_scheme == "Top Set + Back-off"
+                    is_compound = exercise_name in COMPOUND_EXERCISES
+                    increment = WEIGHT_INCREMENT["compound"] if is_compound else WEIGHT_INCREMENT["isolation"]
+
+                    if use_backoff:
+                        top_weight = st.number_input(
+                            "Top Set Weight (kg)",
+                            min_value=0.0,
+                            max_value=500.0,
+                            value=float(target["weight"]) if target["weight"] else 20.0,
+                            step=increment,
+                            key=f"{key_prefix}_top_weight"
+                        )
+                        suggested_backoff = target.get("backoff_weight") or round(top_weight * BACKOFF_PERCENT / increment) * increment
+                        backoff_weight = st.number_input(
+                            "Back-off Weight (kg)",
+                            min_value=0.0,
+                            max_value=500.0,
+                            value=float(suggested_backoff),
+                            step=increment,
+                            key=f"{key_prefix}_backoff_weight"
+                        )
+                        working_weight = top_weight
+                        st.caption(f"Back-off target: {backoff_weight}kg × {target.get('backoff_reps', target['reps_per_set'])} reps")
+                    else:
+                        working_weight = st.number_input(
+                            "Weight (kg)",
+                            min_value=0.0,
+                            max_value=500.0,
+                            value=float(target["weight"]) if target["weight"] else 20.0,
+                            step=increment,
+                            key=f"{key_prefix}_weight"
+                        )
+                        backoff_weight = working_weight
+
+                    extra_sets = 0
+                    if target.get("suggested_extra_sets"):
+                        extra_sets = 1 if st.checkbox(
+                            "Add 1 extra set (recommended)",
+                            key=f"{key_prefix}_extra_set"
+                        ) else 0
 
                     sets_data = []
-                    cols = st.columns(exercise["sets"])
+                    set_count = exercise["sets"] + extra_sets
+                    cols = st.columns(set_count)
                     for i, col in enumerate(cols):
                         with col:
-                            st.markdown(f"**Set {i+1}**")
+                            if use_backoff:
+                                set_label = "Top Set" if i == 0 else f"Back-off {i}"
+                                set_weight = working_weight if i == 0 else backoff_weight
+                                default_reps = target["reps_per_set"] if i == 0 else target.get("backoff_reps", target["reps_per_set"])
+                            else:
+                                set_label = f"Set {i+1}"
+                                set_weight = working_weight
+                                default_reps = target["reps_per_set"]
+
+                            st.markdown(f"**{set_label}**")
                             reps = st.number_input(
                                 "Reps",
                                 min_value=0,
                                 max_value=50,
-                                value=target["reps_per_set"],
+                                value=default_reps,
                                 key=f"{key_prefix}_reps_{i}"
                             )
                             rpe = st.slider(
@@ -1347,13 +1634,13 @@ def main():
                                 0.5,
                                 key=f"{key_prefix}_rpe_{i}"
                             )
-                            sets_data.append({"reps": reps, "rpe": rpe})
+                            sets_data.append({"reps": reps, "rpe": rpe, "weight": set_weight})
 
                     notes = st.text_area("Notes", placeholder="How did it feel?", key=f"{key_prefix}_notes")
 
                     session_data.append({
                         "exercise": exercise,
-                        "weight": weight,
+                        "weight": working_weight,
                         "sets": sets_data,
                         "notes": notes
                     })
@@ -1375,12 +1662,13 @@ def main():
                     sets_data = entry["sets"]
                     notes = entry["notes"]
 
-                    is_pr, old_pr = check_for_new_pr(exercise_name, weight, logs)
+                    session_top_weight = max([s.get("weight", weight) for s in sets_data]) if sets_data else weight
+                    is_pr, old_pr = check_for_new_pr(exercise_name, session_top_weight, logs)
 
                     log_entry = {
                         "date": session_time,
                         "workout": selected_workout,
-                        "weight": weight,
+                        "weight": session_top_weight,
                         "sets": sets_data,
                         "notes": notes
                     }
@@ -1398,7 +1686,7 @@ def main():
                         session_time,
                         selected_workout,
                         exercise_name,
-                        weight,
+                        session_top_weight,
                         serialize_sets(sets_data),
                         notes
                     ])
@@ -1407,8 +1695,8 @@ def main():
                     score, consistency = coach.calculate_session_score(sets_data, min_r, max_r)
                     score_lines.append(f"{exercise_name}: {score:.0f}/100 - {consistency}")
 
-                    if is_pr and weight > old_pr:
-                        pr_hits.append(f"{exercise_name}: {weight}kg (+{weight-old_pr}kg)")
+                    if is_pr and session_top_weight > old_pr:
+                        pr_hits.append(f"{exercise_name}: {session_top_weight}kg (+{session_top_weight-old_pr}kg)")
 
                 append_workout_logs(workout_rows)
 
@@ -1437,11 +1725,11 @@ def main():
                 df_data = []
                 for entry in reversed(history):
                     date = entry.get("date", "")[:10]
-                    weight = entry.get("weight", 0)
-                    sets = entry.get("sets", [])
+                    sets = get_session_sets(entry)
+                    top_weight = get_session_top_weight(entry)
                     avg_reps = sum([s.get("reps", 0) for s in sets]) / max(1, len(sets))
-                    volume = weight * sum([s.get("reps", 0) for s in sets])
-                    df_data.append({"Date": date, "Weight": weight, "Avg Reps": round(avg_reps, 1), "Volume": volume})
+                    volume = sum([s.get("weight", top_weight) * s.get("reps", 0) for s in sets])
+                    df_data.append({"Date": date, "Weight": top_weight, "Avg Reps": round(avg_reps, 1), "Volume": volume})
 
                 df = pd.DataFrame(df_data)
 
@@ -1457,10 +1745,21 @@ def main():
                 # 1RM Estimate
                 if history:
                     latest = history[0]
-                    latest_weight = latest.get("weight", 0)
-                    latest_reps = sum([s.get("reps", 0) for s in latest.get("sets", [])]) / max(1, len(latest.get("sets", [])))
-                    est_1rm = calculate_1rm(latest_weight, int(latest_reps))
-                    st.info(f"**Estimated 1RM:** {est_1rm:.1f}kg (based on {latest_weight}kg × {int(latest_reps)} reps)")
+                    latest_sets = get_session_sets(latest)
+                    if latest_sets:
+                        best_set = max(
+                            latest_sets,
+                            key=lambda s: estimate_e1rm(s.get("weight", 0), s.get("reps", 0), s.get("rpe", TARGET_RPE))
+                        )
+                        est_1rm = estimate_e1rm(
+                            best_set.get("weight", 0),
+                            best_set.get("reps", 0),
+                            best_set.get("rpe", TARGET_RPE)
+                        )
+                        st.info(
+                            f"**Estimated 1RM:** {est_1rm:.1f}kg "
+                            f"(best set: {best_set.get('weight', 0)}kg × {best_set.get('reps', 0)} reps @ RPE {best_set.get('rpe', TARGET_RPE)})"
+                        )
 
     # ========== TAB 4: ANALYTICS ==========
     with tab4:
@@ -1481,6 +1780,41 @@ def main():
             with c4: st.metric("Consistency", f"{streak['consistency_percent']}%")
 
             st.divider()
+
+            weekly_review = get_weekly_review(logs)
+            recent = weekly_review["recent"]
+            previous = weekly_review["previous"]
+            if recent["sessions"] > 0:
+                st.markdown("### 📅 Weekly Performance Review")
+                prev_has_data = previous["sessions"] > 0
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.metric(
+                        "Sessions",
+                        recent["sessions"],
+                        delta=(recent["sessions"] - previous["sessions"]) if prev_has_data else None
+                    )
+                with c2:
+                    st.metric(
+                        "Volume",
+                        f"{recent['volume']:.0f}kg",
+                        delta=(f"{recent['volume'] - previous['volume']:.0f}kg" if prev_has_data else None)
+                    )
+                with c3:
+                    st.metric(
+                        "Avg RPE",
+                        f"{recent['avg_rpe']:.2f}",
+                        delta=(round(recent["avg_rpe"] - previous["avg_rpe"], 2) if prev_has_data else None)
+                    )
+                with c4:
+                    st.metric(
+                        "Avg e1RM",
+                        f"{recent['avg_e1rm']:.1f}kg",
+                        delta=(f"{recent['avg_e1rm'] - previous['avg_e1rm']:.1f}kg" if prev_has_data else None)
+                    )
+                if not prev_has_data:
+                    st.caption("Not enough prior-week data for deltas yet.")
+                st.divider()
 
             c1, c2, c3, c4 = st.columns(4)
             with c1: st.metric("Sessions", all_stats["total_sessions"])
@@ -1716,14 +2050,14 @@ def main():
                 if filter_option == "Inactive Only" and days_gap <= 14:
                     continue
 
-                best_weight = max(h.get("weight", 0) for h in history)
+                best_weight = max(get_session_top_weight(h) for h in history)
                 last_session = history[0] if history else {}
                 exercise_list.append({
                     "name": ex_name,
                     "days_gap": days_gap,
                     "sessions": len(history),
                     "best_weight": best_weight,
-                    "last_weight": last_session.get("weight", 0),
+                    "last_weight": get_session_top_weight(last_session) if last_session else 0,
                     "last_session": last_session
                 })
 
@@ -1766,7 +2100,7 @@ def main():
 
                     # Last session details
                     if ex["last_session"]:
-                        sets = ex["last_session"].get("sets", [])
+                        sets = get_session_sets(ex["last_session"])
                         if sets:
                             reps = [s.get("reps", 0) for s in sets]
                             rpe = [s.get("rpe", 8) for s in sets]
