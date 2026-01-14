@@ -53,7 +53,9 @@ DELOAD_RPE = 9.5
 
 COMPOUND_EXERCISES = [
     "High Bar Squat", "Romanian Deadlift", "Leg Press",
-    "Unilateral Leg Press", "Hack Squat", "Hip Thrust"
+    "Unilateral Leg Press", "Hack Squat", "Hip Thrust",
+    "Machine Chest Press (Seated)", "Machine Chest Press (Lying)",
+    "Seated Cable Row", "Seated Lat Pulldown"
 ]
 
 EXERCISES = {
@@ -67,7 +69,11 @@ EXERCISES = {
         {"name": "Seated Leg Curl", "sets": 3, "rep_range": (12, 15), "rest": "90s", "rest_seconds": 90,
          "video": "https://www.youtube.com/watch?v=OrxowZ4l3yI", "notes": "Point toes, squeeze hamstrings."},
         {"name": "Seated Calf Raise", "sets": 4, "rep_range": (15, 20), "rest": "60s", "rest_seconds": 60,
-         "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc", "notes": "Soleus focus. Deep stretch, hard squeeze."}
+         "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc", "notes": "Soleus focus. Deep stretch, hard squeeze."},
+        {"name": "Triceps Rope Pushdown", "sets": 3, "rep_range": (12, 15), "rest": "60s", "rest_seconds": 60,
+         "video": "https://www.youtube.com/watch?v=vB5OHsJ3EME", "notes": "Elbows pinned, full extension, slow return."},
+        {"name": "Incline Dumbbell Curl", "sets": 3, "rep_range": (10, 12), "rest": "75s", "rest_seconds": 75,
+         "video": "https://www.youtube.com/watch?v=soxrZlIl35U", "notes": "Full stretch, supinate hard, control the negative."}
     ],
     "Legs B": [
         {"name": "Romanian Deadlift", "sets": 3, "rep_range": (8, 10), "rest": "3 min", "rest_seconds": 180,
@@ -78,6 +84,14 @@ EXERCISES = {
          "video": "https://www.youtube.com/watch?v=1Tq3QdYUuHs", "notes": "Squeeze hard at peak contraction."},
         {"name": "Adductor Machine", "sets": 3, "rep_range": (15, 20), "rest": "60s", "rest_seconds": 60,
          "video": "https://www.youtube.com/watch?v=KaEp53Hj-EU", "notes": "Inner thigh focus. Control both phases."},
+        {"name": "Machine Chest Press (Seated)", "sets": 3, "rep_range": (8, 12), "rest": "2 min", "rest_seconds": 120,
+         "video": "https://www.youtube.com/watch?v=VmB1G1K7v94",
+         "notes": "Choose seated or lying chest press based on availability."},
+        {"name": "Machine Chest Press (Lying)", "sets": 3, "rep_range": (8, 12), "rest": "2 min", "rest_seconds": 120,
+         "video": "https://www.youtube.com/watch?v=VmB1G1K7v94",
+         "notes": "Choose seated or lying chest press based on availability."},
+        {"name": "Pec Deck", "sets": 3, "rep_range": (12, 15), "rest": "75s", "rest_seconds": 75,
+         "video": "https://www.youtube.com/watch?v=U6T6l1a1m4M", "notes": "Squeeze chest, slight bend in elbows."},
         {"name": "Seated Calf Raise", "sets": 4, "rep_range": (15, 20), "rest": "60s", "rest_seconds": 60,
          "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc", "notes": "Soleus focus. Deep stretch, hard squeeze."}
     ],
@@ -90,6 +104,10 @@ EXERCISES = {
          "video": "https://www.youtube.com/watch?v=WaRl1k71iT0", "notes": "Drop weight 20% after failure, continue."},
         {"name": "Seated Leg Curl", "sets": 3, "rep_range": (15, 20), "rest": "60s", "rest_seconds": 60,
          "video": "https://www.youtube.com/watch?v=OrxowZ4l3yI", "notes": "High reps, chase the pump."},
+        {"name": "Seated Cable Row", "sets": 3, "rep_range": (8, 12), "rest": "90s", "rest_seconds": 90,
+         "video": "https://www.youtube.com/watch?v=HJSVR_67OlM", "notes": "Neutral spine, pull to lower ribs, squeeze back."},
+        {"name": "Seated Lat Pulldown", "sets": 3, "rep_range": (8, 12), "rest": "90s", "rest_seconds": 90,
+         "video": "https://www.youtube.com/watch?v=CAwf7n6Luuc", "notes": "Pull to upper chest, drive elbows down."},
         {"name": "Calf Press", "sets": 3, "rep_range": (20, 25), "rest": "45s", "rest_seconds": 45,
          "video": "https://www.youtube.com/watch?v=K_jsGgztcGU", "notes": "Leg press machine. Burn it out."}
     ]
@@ -116,7 +134,10 @@ STARTING_WEIGHTS = {
     "High Bar Squat": 40, "Leg Extension": 20, "Leg Press": 60, "Seated Leg Curl": 15,
     "Romanian Deadlift": 40, "Unilateral Leg Press": 30, "Lying Leg Curl": 15,
     "Adductor Machine": 20, "Seated Calf Raise": 25, "Hack Squat": 40,
-    "Hip Thrust": 40, "Leg Extension (Drop Set)": 15, "Calf Press": 60
+    "Hip Thrust": 40, "Leg Extension (Drop Set)": 15, "Calf Press": 60,
+    "Triceps Rope Pushdown": 20, "Incline Dumbbell Curl": 10,
+    "Machine Chest Press (Seated)": 30, "Machine Chest Press (Lying)": 30,
+    "Pec Deck": 25, "Seated Cable Row": 35, "Seated Lat Pulldown": 35
 }
 
 WORKOUT_LOG_SHEET = "workout_logs"
@@ -1633,6 +1654,7 @@ def main():
                 for exercise in selected_exercises:
                     exercise_name = exercise["name"]
                     target = coach.get_next_target(exercise_name, exercise)
+                    key_prefix = f"log_{selected_workout}_{exercise_name}".replace(" ", "_")
 
                     st.markdown(f"### {create_exercise_link(exercise_name, exercise['video'])}")
                     c1, c2, c3 = st.columns(3)
@@ -1659,7 +1681,12 @@ def main():
 
                     st.info(target["message"])
 
-                    key_prefix = f"log_{selected_workout}_{exercise_name}".replace(" ", "_")
+                    skip_exercise = st.checkbox("Skip today", key=f"{key_prefix}_skip")
+                    if skip_exercise:
+                        st.caption("Skipped - no data will be logged for this exercise.")
+                        st.markdown("---")
+                        continue
+
                     use_backoff = log_scheme == "Top Set + Back-off"
                     is_compound = exercise_name in COMPOUND_EXERCISES
                     increment = WEIGHT_INCREMENT["compound"] if is_compound else WEIGHT_INCREMENT["isolation"]
@@ -1752,6 +1779,9 @@ def main():
                 submitted = st.form_submit_button("✅ Save Session", type="primary", use_container_width=True)
 
             if submitted:
+                if not session_data:
+                    st.warning("No exercises logged. Uncheck Skip for the exercises you trained.")
+                    st.stop()
                 session_time = datetime.now().isoformat()
                 pr_hits = []
                 score_lines = []
