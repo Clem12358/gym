@@ -55,7 +55,7 @@ COMPOUND_EXERCISES = [
     "High Bar Squat", "Romanian Deadlift", "Leg Press",
     "Unilateral Leg Press", "Hack Squat", "Hip Thrust",
     "Machine Chest Press (Seated)", "Machine Chest Press (Lying)",
-    "Seated Cable Row", "Seated Lat Pulldown"
+    "Seated Cable Row", "Seated Lat Pulldown", "Bulgarian Split Squat"
 ]
 
 EXERCISES = {
@@ -96,8 +96,8 @@ EXERCISES = {
          "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc", "notes": "Soleus focus. Deep stretch, hard squeeze."}
     ],
     "Legs C": [
-        {"name": "Leg Press", "sets": 3, "rep_range": (10, 12), "rest": "2 min", "rest_seconds": 120,
-         "video": "https://www.youtube.com/watch?v=8nm863C0c60", "notes": "Feet shoulder-width, full ROM."},
+        {"name": "Bulgarian Split Squat", "sets": 3, "rep_range": (8, 12), "rest": "90s", "rest_seconds": 90,
+         "video": "https://www.youtube.com/watch?v=2C-uNgKwPLE", "notes": "Torso tall, knee tracks toes, full depth each leg."},
         {"name": "Hip Thrust", "sets": 3, "rep_range": (10, 12), "rest": "2 min", "rest_seconds": 120,
          "video": "https://www.youtube.com/watch?v=xDmFkJxPzeM", "notes": "Glute focus. Full hip extension."},
         {"name": "Leg Extension (Drop Set)", "sets": 3, "rep_range": (15, 20), "rest": "90s", "rest_seconds": 90,
@@ -137,7 +137,8 @@ STARTING_WEIGHTS = {
     "Hip Thrust": 40, "Leg Extension (Drop Set)": 15, "Calf Press": 60,
     "Triceps Rope Pushdown": 20, "Incline Dumbbell Curl": 10,
     "Machine Chest Press (Seated)": 30, "Machine Chest Press (Lying)": 30,
-    "Pec Deck": 25, "Seated Cable Row": 35, "Seated Lat Pulldown": 35
+    "Pec Deck": 25, "Seated Cable Row": 35, "Seated Lat Pulldown": 35,
+    "Bulgarian Split Squat": 10
 }
 
 WORKOUT_LOG_SHEET = "workout_logs"
