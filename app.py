@@ -96,8 +96,8 @@ EXERCISES = {
          "video": "https://www.youtube.com/watch?v=-M4-G8p8fmc", "notes": "Soleus focus. Deep stretch, hard squeeze."}
     ],
     "Legs C": [
-        {"name": "Hack Squat", "sets": 3, "rep_range": (10, 12), "rest": "3 min", "rest_seconds": 180,
-         "video": "https://www.youtube.com/watch?v=0tmSzVHnh_s", "notes": "Quad dominant. Controlled descent."},
+        {"name": "Leg Press", "sets": 3, "rep_range": (10, 12), "rest": "2 min", "rest_seconds": 120,
+         "video": "https://www.youtube.com/watch?v=8nm863C0c60", "notes": "Feet shoulder-width, full ROM."},
         {"name": "Hip Thrust", "sets": 3, "rep_range": (10, 12), "rest": "2 min", "rest_seconds": 120,
          "video": "https://www.youtube.com/watch?v=xDmFkJxPzeM", "notes": "Glute focus. Full hip extension."},
         {"name": "Leg Extension (Drop Set)", "sets": 3, "rep_range": (15, 20), "rest": "90s", "rest_seconds": 90,
