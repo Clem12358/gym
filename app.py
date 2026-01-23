@@ -60,8 +60,13 @@ COMPOUND_EXERCISES = [
 
 MACHINE_STACK_EXERCISES = {
     "Leg Extension",
+    "Leg Extension (Drop Set)",
     "Leg Press",
-    "Seated Leg Curl"
+    "Seated Leg Curl",
+    "Unilateral Leg Press",
+    "Adductor Machine",
+    "Lying Leg Curl",
+    "Pec Deck"
 }
 LB_TO_KG = 0.45359237
 KG_TO_LB = 1 / LB_TO_KG
