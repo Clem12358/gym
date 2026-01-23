@@ -58,6 +58,73 @@ COMPOUND_EXERCISES = [
     "Seated Cable Row", "Seated Lat Pulldown", "Bulgarian Split Squat"
 ]
 
+MACHINE_STACK_EXERCISES = {
+    "Leg Extension",
+    "Leg Press",
+    "Seated Leg Curl"
+}
+LB_TO_KG = 0.45359237
+KG_TO_LB = 1 / LB_TO_KG
+MACHINE_STACK_BASE_KG = 13.5
+MACHINE_STACK_STEP_KG = 9.0
+MACHINE_STACK_MICRO_LB = (0, 5, 10, 15)
+MACHINE_STACK_MAX_KG = 300.0
+
+
+def kg_to_lb(kg: float) -> float:
+    return kg * KG_TO_LB
+
+
+def lb_to_kg(lb: float) -> float:
+    return lb * LB_TO_KG
+
+
+def build_machine_stack_weights(max_kg: float = MACHINE_STACK_MAX_KG) -> List[float]:
+    base_lb = kg_to_lb(MACHINE_STACK_BASE_KG)
+    step_lb = kg_to_lb(MACHINE_STACK_STEP_KG)
+    max_lb = kg_to_lb(max_kg)
+    options_lb: List[float] = []
+    n = 0
+    while True:
+        base = base_lb + (n * step_lb)
+        if base > max_lb + 1e-6:
+            break
+        for micro in MACHINE_STACK_MICRO_LB:
+            candidate = base + micro
+            if candidate <= max_lb + 1e-6:
+                options_lb.append(candidate)
+        n += 1
+    return sorted({round(lb_to_kg(lb), 2) for lb in options_lb})
+
+
+MACHINE_STACK_WEIGHTS = build_machine_stack_weights()
+
+
+def is_machine_stack_exercise(exercise_name: str) -> bool:
+    return exercise_name in MACHINE_STACK_EXERCISES
+
+
+def snap_machine_weight(weight_kg: float) -> float:
+    if not MACHINE_STACK_WEIGHTS:
+        return weight_kg
+    return min(MACHINE_STACK_WEIGHTS, key=lambda w: abs(w - weight_kg))
+
+
+def get_exercise_increment_kg(exercise_name: str) -> float:
+    if is_machine_stack_exercise(exercise_name):
+        return round(lb_to_kg(5), 2)
+    is_compound = exercise_name in COMPOUND_EXERCISES
+    return WEIGHT_INCREMENT["compound"] if is_compound else WEIGHT_INCREMENT["isolation"]
+
+
+def round_weight_for_exercise(exercise_name: str, weight_kg: float) -> float:
+    if is_machine_stack_exercise(exercise_name):
+        return snap_machine_weight(weight_kg)
+    increment = get_exercise_increment_kg(exercise_name)
+    if increment <= 0:
+        return weight_kg
+    return round(weight_kg / increment) * increment
+
 EXERCISES = {
     "Legs A": [
         {"name": "High Bar Squat", "sets": 3, "rep_range": (5, 8), "rest": "3 min", "rest_seconds": 180,
@@ -1149,13 +1216,22 @@ class AdaptiveCoach:
     def get_next_target(self, exercise_name: str, exercise_config: Dict) -> Dict:
         history = self.get_exercise_history(exercise_name, 8)
         min_range, max_range = exercise_config["rep_range"]
-        is_compound = exercise_name in COMPOUND_EXERCISES
-        increment = WEIGHT_INCREMENT["compound"] if is_compound else WEIGHT_INCREMENT["isolation"]
+        use_machine_stack = is_machine_stack_exercise(exercise_name)
+        increment = get_exercise_increment_kg(exercise_name)
 
         def round_to_increment(value: float) -> float:
+            if use_machine_stack:
+                return round_weight_for_exercise(exercise_name, value)
             if increment <= 0:
                 return value
             return round(value / increment) * increment
+
+        def normalize_weight(value: float, round_weight: bool) -> float:
+            if use_machine_stack:
+                return round_to_increment(value)
+            if not round_weight:
+                return value
+            return round_to_increment(value)
 
         def build_target(
             weight: float,
@@ -1166,7 +1242,7 @@ class AdaptiveCoach:
             round_weight: bool = True,
             **kwargs
         ) -> Dict:
-            base_weight = weight if not round_weight else round_to_increment(weight)
+            base_weight = normalize_weight(weight, round_weight)
             backoff_weight = round_to_increment(base_weight * backoff_percent)
             backoff_reps = min(max_range, max(reps, min_range) + 2)
             target = {
@@ -1183,11 +1259,12 @@ class AdaptiveCoach:
 
         if not history:
             starting_weight = STARTING_WEIGHTS.get(exercise_name, 20)
+            display_start = round_to_increment(starting_weight) if use_machine_stack else starting_weight
             return build_target(
                 starting_weight,
                 min_range,
                 "BASELINE",
-                f"First time! Start with {starting_weight}kg for {min_range} reps.",
+                f"First time! Start with {display_start}kg for {min_range} reps.",
                 confidence=50,
                 is_new=True,
                 trend_info=None
@@ -1199,6 +1276,7 @@ class AdaptiveCoach:
         last_weight = last_stats["top_weight"]
         last_reps = [s.get("reps", 0) for s in last_stats["sets"]]
         last_avg_rpe = last_stats["avg_rpe"]
+        display_last_weight = round_to_increment(last_weight) if use_machine_stack else last_weight
 
         if days_gap is not None and days_gap > 14:
             deload_factor, phase, phase_msg = self.get_return_deload_factor(days_gap)
@@ -1229,7 +1307,7 @@ class AdaptiveCoach:
                 last_weight,
                 min_range + 1,
                 "BUILD",
-                f"Second session! Use {last_weight}kg again, aim for {min_range + 1} reps.",
+                f"Second session! Use {display_last_weight}kg again, aim for {min_range + 1} reps.",
                 backoff_percent=backoff_percent,
                 round_weight=False,
                 confidence=60,
@@ -1272,7 +1350,7 @@ class AdaptiveCoach:
             )
 
         if last_stats["min_reps"] >= max_range and last_stats["avg_rpe"] <= (MAX_RPE - 0.5) and trend["trend"] != "DECLINING":
-            new_weight = last_weight + increment
+            new_weight = round_to_increment(last_weight + increment)
             return build_target(
                 new_weight,
                 min_range,
@@ -1325,7 +1403,7 @@ class AdaptiveCoach:
                 last_weight,
                 target_reps,
                 "BUILD",
-                f"Target: {last_weight}kg × {target_reps} reps.",
+                f"Target: {display_last_weight}kg × {target_reps} reps.",
                 backoff_percent=backoff_percent,
                 round_weight=False,
                 confidence=75,
@@ -1339,7 +1417,7 @@ class AdaptiveCoach:
             last_weight,
             min_range,
             "CONSOLIDATE",
-            f"Same weight ({last_weight}kg), focus on clean {min_range} reps.",
+            f"Same weight ({display_last_weight}kg), focus on clean {min_range} reps.",
             backoff_percent=backoff_percent,
             round_weight=False,
             confidence=70,
@@ -1689,11 +1767,11 @@ def main():
                         continue
 
                     use_backoff = log_scheme == "Top Set + Back-off"
-                    is_compound = exercise_name in COMPOUND_EXERCISES
-                    increment = WEIGHT_INCREMENT["compound"] if is_compound else WEIGHT_INCREMENT["isolation"]
+                    use_machine_stack = is_machine_stack_exercise(exercise_name)
+                    increment = get_exercise_increment_kg(exercise_name)
 
                     if use_backoff:
-                        top_weight = st.number_input(
+                        top_weight_input = st.number_input(
                             "Top Set Weight (kg)",
                             min_value=0.0,
                             max_value=500.0,
@@ -1701,9 +1779,12 @@ def main():
                             step=increment,
                             key=f"{key_prefix}_top_weight"
                         )
+                        top_weight = round_weight_for_exercise(exercise_name, top_weight_input) if use_machine_stack else top_weight_input
+                        if use_machine_stack and abs(top_weight - top_weight_input) > 0.01:
+                            st.caption(f"Adjusted to {top_weight}kg to match the machine stack.")
                         backoff_percent = target.get("backoff_percent", BACKOFF_PERCENT)
-                        suggested_backoff = round(top_weight * backoff_percent / increment) * increment
-                        backoff_weight = st.number_input(
+                        suggested_backoff = round_weight_for_exercise(exercise_name, top_weight * backoff_percent)
+                        backoff_weight_input = st.number_input(
                             "Back-off Weight (kg)",
                             min_value=0.0,
                             max_value=500.0,
@@ -1711,13 +1792,16 @@ def main():
                             step=increment,
                             key=f"{key_prefix}_backoff_weight"
                         )
+                        backoff_weight = round_weight_for_exercise(exercise_name, backoff_weight_input) if use_machine_stack else backoff_weight_input
+                        if use_machine_stack and abs(backoff_weight - backoff_weight_input) > 0.01:
+                            st.caption(f"Adjusted to {backoff_weight}kg to match the machine stack.")
                         working_weight = top_weight
                         st.caption(
                             f"Back-off target: {backoff_weight}kg × {target.get('backoff_reps', target['reps_per_set'])} reps "
                             f"({int(backoff_percent * 100)}%)"
                         )
                     else:
-                        working_weight = st.number_input(
+                        weight_input = st.number_input(
                             "Weight (kg)",
                             min_value=0.0,
                             max_value=500.0,
@@ -1725,6 +1809,9 @@ def main():
                             step=increment,
                             key=f"{key_prefix}_weight"
                         )
+                        working_weight = round_weight_for_exercise(exercise_name, weight_input) if use_machine_stack else weight_input
+                        if use_machine_stack and abs(working_weight - weight_input) > 0.01:
+                            st.caption(f"Adjusted to {working_weight}kg to match the machine stack.")
                         backoff_weight = working_weight
 
                     extra_sets = 0
