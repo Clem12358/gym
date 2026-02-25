@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="/Users/clementdurix/Code/gym/neurolegs-local"
+
+cd "$APP_DIR"
+
+if [ ! -d "node_modules" ]; then
+  npm install
+fi
+
+npm run dev

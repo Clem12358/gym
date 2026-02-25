@@ -39,7 +39,7 @@ USER_PROFILE = {
 }
 
 BASE_SCHEDULE = {
-    0: "Legs A", 1: "Rest", 2: "Legs B", 3: "Rest",
+    0: "Legs A", 1: "Rest", 2: "Legs B", 3: "Session D",
     4: "Legs C", 5: "Rest", 6: "Rest"
 }
 
@@ -55,7 +55,8 @@ COMPOUND_EXERCISES = [
     "High Bar Squat", "Romanian Deadlift", "Leg Press",
     "Unilateral Leg Press", "Hack Squat", "Hip Thrust",
     "Machine Chest Press (Seated)", "Machine Chest Press (Lying)",
-    "Seated Cable Row", "Seated Lat Pulldown", "Bulgarian Split Squat"
+    "Seated Cable Row", "Seated Lat Pulldown", "Bulgarian Split Squat",
+    "Pull-Up (Weighted)", "Unilateral Plate-Loaded Pulldown"
 ]
 
 MACHINE_STACK_EXERCISES = {
@@ -66,7 +67,8 @@ MACHINE_STACK_EXERCISES = {
     "Unilateral Leg Press",
     "Adductor Machine",
     "Lying Leg Curl",
-    "Pec Deck"
+    "Pec Deck",
+    "Reverse Pec Deck"
 }
 LB_TO_KG = 0.45359237
 KG_TO_LB = 1 / LB_TO_KG
@@ -176,12 +178,43 @@ EXERCISES = {
          "video": "https://www.youtube.com/watch?v=WaRl1k71iT0", "notes": "Drop weight 20% after failure, continue."},
         {"name": "Seated Leg Curl", "sets": 3, "rep_range": (15, 20), "rest": "60s", "rest_seconds": 60,
          "video": "https://www.youtube.com/watch?v=OrxowZ4l3yI", "notes": "High reps, chase the pump."},
-        {"name": "Seated Cable Row", "sets": 3, "rep_range": (8, 12), "rest": "90s", "rest_seconds": 90,
-         "video": "https://www.youtube.com/watch?v=HJSVR_67OlM", "notes": "Neutral spine, pull to lower ribs, squeeze back."},
-        {"name": "Seated Lat Pulldown", "sets": 3, "rep_range": (8, 12), "rest": "90s", "rest_seconds": 90,
-         "video": "https://www.youtube.com/watch?v=CAwf7n6Luuc", "notes": "Pull to upper chest, drive elbows down."},
+        {"name": "Cable Lateral Raise (Unilateral)", "sets": 3, "rep_range": (12, 18), "rest": "60-75s", "rest_seconds": 75,
+         "video": "https://www.youtube.com/watch?v=I0EBQ5dHjYU",
+         "notes": "Stand side-on and hold the cable slightly behind your hip. Raise in the scapular plane (arm slightly forward), lead with elbow, keep wrist neutral, stop around shoulder height before shrugging. Brace with free hand, slight lean away, 1s pause at top, 2-3s lowering."},
+        {"name": "Reverse Pec Deck", "sets": 3, "rep_range": (12, 20), "rest": "60-75s", "rest_seconds": 75,
+         "video": "https://www.youtube.com/watch?v=EA7u4Q_8HQ0",
+         "notes": "Set seat so handles align with rear delts. Soft elbows, open arms wide, and finish with shoulder blades moving around the ribcage, not lower-back extension."},
         {"name": "Calf Press", "sets": 3, "rep_range": (20, 25), "rest": "45s", "rest_seconds": 45,
          "video": "https://www.youtube.com/watch?v=K_jsGgztcGU", "notes": "Leg press machine. Burn it out."}
+    ],
+    "Session D": [
+        {"name": "Pull-Up (Weighted)", "sets": 4, "rep_range": (6, 10), "rest": "2-3 min", "rest_seconds": 150,
+         "video": "https://www.youtube.com/watch?v=eGo4IYlbE5g",
+         "notes": "Unassisted baseline. When you hit 4x10 clean for 1-2 sessions, add +2.5kg (or +1.25kg) and rebuild from 6-8 reps."},
+        {"name": "Unilateral Plate-Loaded Pulldown", "sets": 4, "rep_range": (8, 12), "rest": "90-120s", "rest_seconds": 120,
+         "video": "https://www.youtube.com/watch?v=CAwf7n6Luuc",
+         "notes": "Top-to-down unilateral path. Keep shoulder down, slight torso lean, elbow tracks toward your hip, and avoid twisting."},
+        {"name": "Seated Lat Pulldown", "sets": 3, "rep_range": (8, 12), "rest": "90s", "rest_seconds": 90,
+         "video": "https://www.youtube.com/watch?v=CAwf7n6Luuc",
+         "notes": "Use long straight bar (barre droite longue), overhand grip just outside shoulder width, pull to upper chest with elbows driving down."},
+        {"name": "Seated Cable Row", "sets": 3, "rep_range": (10, 14), "rest": "90s", "rest_seconds": 90,
+         "video": "https://www.youtube.com/watch?v=HJSVR_67OlM",
+         "notes": "Pull toward upper chest with neutral spine and slight chest support from your brace; do not swing torso."},
+        {"name": "Incline Dumbbell Triceps Extension", "sets": 4, "rep_range": (10, 15), "rest": "75-90s", "rest_seconds": 90,
+         "video": "https://www.youtube.com/watch?v=YbX7Wd8jQ-Q",
+         "notes": "Slight incline bench. Let DB travel behind forehead for deep triceps stretch, then extend without flaring elbows."},
+        {"name": "Triceps Rope Pushdown", "sets": 3, "rep_range": (12, 15), "rest": "60-75s", "rest_seconds": 75,
+         "video": "https://www.youtube.com/watch?v=vB5OHsJ3EME",
+         "notes": "Elbows fixed, shoulders down, split rope at bottom with full lockout and slow return."},
+        {"name": "Incline Dumbbell Curl", "sets": 3, "rep_range": (8, 12), "rest": "75s", "rest_seconds": 75,
+         "video": "https://www.youtube.com/watch?v=soxrZlIl35U",
+         "notes": "Full shoulder extension for stretch, supinate hard, and control eccentric."},
+        {"name": "Hammer Curl", "sets": 2, "rep_range": (10, 14), "rest": "60-75s", "rest_seconds": 75,
+         "video": "https://www.youtube.com/watch?v=zC3nLlEvin4",
+         "notes": "Neutral grip, elbows by sides, slight forward DB path, no hip swing."},
+        {"name": "Preacher Curl", "sets": 2, "rep_range": (10, 14), "rest": "60-75s", "rest_seconds": 75,
+         "video": "https://www.youtube.com/watch?v=fIWP-FRFNU0",
+         "notes": "Upper arm fixed on pad, full elbow extension under control, squeeze top without lifting elbow off pad."}
     ]
 }
 
@@ -209,8 +242,10 @@ STARTING_WEIGHTS = {
     "Hip Thrust": 40, "Leg Extension (Drop Set)": 15, "Calf Press": 60,
     "Triceps Rope Pushdown": 20, "Incline Dumbbell Curl": 10,
     "Machine Chest Press (Seated)": 30, "Machine Chest Press (Lying)": 30,
-    "Pec Deck": 25, "Seated Cable Row": 35, "Seated Lat Pulldown": 35,
-    "Bulgarian Split Squat": 10
+    "Pec Deck": 25, "Reverse Pec Deck": 25, "Seated Cable Row": 35, "Seated Lat Pulldown": 35,
+    "Bulgarian Split Squat": 10, "Cable Lateral Raise (Unilateral)": 5,
+    "Pull-Up (Weighted)": 0, "Unilateral Plate-Loaded Pulldown": 20,
+    "Incline Dumbbell Triceps Extension": 10, "Hammer Curl": 10, "Preacher Curl": 15
 }
 
 WORKOUT_LOG_SHEET = "workout_logs"
@@ -743,6 +778,7 @@ def generate_warmup_sets(working_weight: float, working_reps: int) -> List[Dict]
 def calculate_streak(logs: Dict, settings: Dict) -> Dict:
     """Calculate training streak and consistency metrics."""
     workouts = logs.get("workouts", [])
+    target_workouts_week = sum(1 for workout in BASE_SCHEDULE.values() if workout != "Rest")
 
     if not workouts:
         return {
@@ -751,7 +787,7 @@ def calculate_streak(logs: Dict, settings: Dict) -> Dict:
             "total_weeks_trained": 0,
             "consistency_percent": 0,
             "workouts_this_week": 0,
-            "target_workouts_week": 3
+            "target_workouts_week": target_workouts_week
         }
 
     # Get unique workout dates
@@ -763,7 +799,7 @@ def calculate_streak(logs: Dict, settings: Dict) -> Dict:
 
     if not workout_dates:
         return {"current_streak_weeks": 0, "longest_streak_weeks": 0, "total_weeks_trained": 0,
-                "consistency_percent": 0, "workouts_this_week": 0, "target_workouts_week": 3}
+                "consistency_percent": 0, "workouts_this_week": 0, "target_workouts_week": target_workouts_week}
 
     # Convert to datetime and sort
     dates = sorted([datetime.fromisoformat(d) for d in workout_dates])
@@ -815,7 +851,7 @@ def calculate_streak(logs: Dict, settings: Dict) -> Dict:
         "total_weeks_trained": len(weeks_trained),
         "consistency_percent": round(consistency, 1),
         "workouts_this_week": workouts_this_week,
-        "target_workouts_week": 3
+        "target_workouts_week": target_workouts_week
     }
 
 
@@ -1694,8 +1730,12 @@ def main():
             st.markdown("## 📝 Log Workout")
 
             workout_name, _ = get_today_workout_with_settings(settings)
-            selected_workout = st.selectbox("Workout", ["Legs A", "Legs B", "Legs C"],
-                index=["Legs A", "Legs B", "Legs C"].index(workout_name) if workout_name not in ["Rest", "Holiday"] else 0)
+            workout_options = list(EXERCISES.keys())
+            selected_workout = st.selectbox(
+                "Workout",
+                workout_options,
+                index=workout_options.index(workout_name) if workout_name in workout_options else 0
+            )
 
             selected_exercises = EXERCISES[selected_workout]
             with st.expander("⏱️ Rest Timer"):
@@ -1780,7 +1820,7 @@ def main():
                             "Top Set Weight (kg)",
                             min_value=0.0,
                             max_value=500.0,
-                            value=float(target["weight"]) if target["weight"] else 20.0,
+                            value=float(target["weight"]),
                             step=increment,
                             key=f"{key_prefix}_top_weight"
                         )
@@ -1810,7 +1850,7 @@ def main():
                             "Weight (kg)",
                             min_value=0.0,
                             max_value=500.0,
-                            value=float(target["weight"]) if target["weight"] else 20.0,
+                            value=float(target["weight"]),
                             step=increment,
                             key=f"{key_prefix}_weight"
                         )
